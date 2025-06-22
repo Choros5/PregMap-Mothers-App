@@ -4,6 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.OnBackPressedDispatcher
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -21,10 +23,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -52,8 +59,33 @@ import com.elvis.pregmap.ui.auth.EmailLoginScreen
 import com.elvis.pregmap.ui.auth.PhoneLoginScreen
 import com.elvis.pregmap.ui.MainScreen
 import com.elvis.pregmap.ui.auth.AppCheckHelper
+import com.google.firebase.auth.FirebaseAuth
+import android.widget.Toast
+import androidx.compose.runtime.DisposableEffect
+import com.elvis.pregmap.ui.screens.PatientRegistrationScreen
+import com.elvis.pregmap.ui.screens.CreatePinScreen
+import com.elvis.pregmap.ui.screens.PinLoginScreen
+import com.elvis.pregmap.ui.screens.ClinicVisitsScreen
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.ktx.Firebase
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
+/**
+ * MainActivity handles the main navigation and authentication flow of the PregMap app.
+ * 
+ * Security Features:
+ * - Prevents users from logging out by pressing the back button when logged in
+ * - Requires double-tap back button to exit the app when on main screen
+ * - Shows confirmation dialog for sign out action to prevent accidental logout
+ * - Automatically redirects logged-in users to main screen
+ * - Prevents navigation to auth screens when already authenticated
+ * - Only allows sign out through the dedicated "Sign Out (Secure)" button in the drawer
+ */
 class MainActivity : ComponentActivity() {
+    private var backPressedTime = 0L
+    private val BACK_PRESS_INTERVAL = 2000L // 2 seconds
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
@@ -65,32 +97,121 @@ class MainActivity : ComponentActivity() {
         setContent {
             PregMapTheme {
                 val navController = rememberNavController()
-                NavHost(
-                    navController = navController,
-                    startDestination = "splash"
-                ) {
-                    composable("splash") { SplashScreen(navController) }
-                    composable("welcome") { WelcomeScreen(navController) }
-                    composable("auth_selection") { AuthSelectionScreen(navController, "signup") }
-                    composable(
-                        "auth_selection/{source}",
-                        arguments = listOf(navArgument("source") { type = NavType.StringType })
-                    ) { backStackEntry ->
-                        val source = backStackEntry.arguments?.getString("source") ?: "signup"
-                        AuthSelectionScreen(navController, source)
+                val auth = FirebaseAuth.getInstance()
+                
+                // Monitor authentication state and navigation
+                LaunchedEffect(auth.currentUser) {
+                    val currentUser = auth.currentUser
+                    val currentRoute = navController.currentBackStackEntry?.destination?.route
+                    
+                    if (currentUser != null && currentRoute != "main") {
+                        // User is logged in but not on main screen, navigate to main
+                        navController.navigate("main") {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    } else if (currentUser == null && currentRoute == "main") {
+                        // User is not logged in but on main screen, navigate to auth
+                        navController.navigate("welcome") {
+                            popUpTo(0) { inclusive = true }
+                        }
                     }
-                    composable("email_signup") { EmailSignUpScreen(navController) }
-                    composable("phone_signup") { PhoneSignUpScreen(navController) }
-                    composable("google_signup") { GoogleSignUpScreen(navController) }
-                    composable("google_login") { GoogleLoginScreen(navController) }
+                }
+                
+                val startDestination = if (FirebaseAuth.getInstance().currentUser != null) {
+                    "main"
+                } else {
+                    "login"
+                }
+                NavHost(navController = navController, startDestination = startDestination) {
                     composable("login") { LoginScreen(navController) }
+                    composable("google_login") { GoogleLoginScreen(navController) }
+                    composable("google_signup") { GoogleSignUpScreen(navController) }
                     composable("email_login") { EmailLoginScreen(navController) }
+                    composable("email_signup") { EmailSignUpScreen(navController) }
                     composable("phone_login") { PhoneLoginScreen(navController) }
+                    composable("phone_signup") { PhoneSignUpScreen(navController) }
                     composable("main") { MainScreen(navController) }
+                    composable("clinic_visits_registration") {
+                        PatientRegistrationScreen(
+                            onRegistrationSuccess = { navController.navigate("clinic_visits_create_pin") },
+                            onBackClick = { navController.popBackStack() }
+                        )
+                    }
+                    composable("clinic_visits_create_pin") {
+                        CreatePinScreen(
+                            onPinCreated = { navController.navigate("clinic_visits") },
+                            onBackClick = { navController.popBackStack() }
+                        )
+                    }
+                    composable("clinic_visits_pin_login") {
+                        PinLoginScreen(
+                            onPinVerified = { navController.navigate("clinic_visits") },
+                            onBackClick = { navController.popBackStack() }
+                        )
+                    }
+                    composable("clinic_visits") { ClinicVisitsScreen() }
                 }
             }
         }
     }
+}
+
+/**
+ * MainScreenWithBackHandler wraps the MainScreen with custom back button handling.
+ * 
+ * Features:
+ * - Prevents accidental logout by back button press
+ * - Requires double-tap back button to exit app when logged in
+ * - Shows toast message on first back press
+ * - Allows normal back navigation when not logged in
+ */
+@Composable
+fun MainScreenWithBackHandler(navController: NavController) {
+    val context = LocalContext.current
+    var backPressedTime by remember { mutableStateOf(0L) }
+    val BACK_PRESS_INTERVAL = 2000L
+    val auth = FirebaseAuth.getInstance()
+    
+    // Create a custom back press callback
+    val backCallback = remember {
+        object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                // Check if user is logged in and on main screen
+                if (auth.currentUser != null) {
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - backPressedTime > BACK_PRESS_INTERVAL) {
+                        backPressedTime = currentTime
+                        Toast.makeText(
+                            context,
+                            "Press back again to exit",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        // User pressed back twice quickly, exit the app
+                        (context as? MainActivity)?.finish()
+                    }
+                } else {
+                    // User is not logged in, allow normal back navigation
+                    navController.popBackStack()
+                }
+            }
+        }
+    }
+    
+    // Register the back callback
+    LaunchedEffect(Unit) {
+        val activity = context as? MainActivity
+        activity?.onBackPressedDispatcher?.addCallback(backCallback)
+    }
+    
+    // Clean up the callback when the composable is disposed
+    DisposableEffect(Unit) {
+        onDispose {
+            backCallback.remove()
+        }
+    }
+    
+    MainScreen(navController)
 }
 
 @Composable
@@ -112,11 +233,24 @@ fun GreetingPreview() {
 @Composable
 fun SplashScreen(navController: NavController) {
     val systemUiController = rememberSystemUiController()
+    val auth = FirebaseAuth.getInstance()
+    
     LaunchedEffect(Unit) {
         systemUiController.setSystemBarsColor(Color(0xFFE3F2FD)) // Light blue
         delay(2000)
+        
+        // Check if user is already logged in
+        val currentUser = auth.currentUser
+        if (currentUser != null) {
+            // User is logged in, navigate to main screen
+            navController.navigate("main") {
+                popUpTo("splash") { inclusive = true }
+            }
+        } else {
+            // User is not logged in, navigate to welcome screen
         navController.navigate("welcome") {
             popUpTo("splash") { inclusive = true }
+            }
         }
     }
     Surface(

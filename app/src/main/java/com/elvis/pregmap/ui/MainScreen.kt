@@ -15,16 +15,29 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.ktx.Firebase
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import com.elvis.pregmap.ui.screens.HomeScreen
+import com.elvis.pregmap.ui.screens.ClinicVisitsScreen
+import androidx.compose.ui.tooling.preview.Preview
 
 // Drawer menu items enum
 enum class DrawerMenuItem(
@@ -46,70 +59,146 @@ enum class DrawerMenuItem(
 @Composable
 fun MainScreen(navController: NavController) {
     val auth = FirebaseAuth.getInstance()
-    val currentUser = auth.currentUser
+    val currentUser = remember { auth.currentUser }
+    val db = remember { Firebase.firestore }
     
     var selectedMenuItem by remember { mutableStateOf(DrawerMenuItem.HOME) }
-    var isEnglish by remember { mutableStateOf(true) }
+    var showSignOutDialog by remember { mutableStateOf(false) }
+    var selectedTab by remember { mutableStateOf(0) }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     
     val scope = rememberCoroutineScope()
     
+    // Memoize the navigation items to prevent recreation
+    val navigationItems = remember {
+        listOf(
+            NavigationItem("Home", Icons.Default.Home, 0),
+            NavigationItem("AI Assistant", Icons.Default.Info, 1),
+            NavigationItem("Community", Icons.Default.Person, 2),
+            NavigationItem("Notifications", Icons.Default.Notifications, 3),
+            NavigationItem("Timeline", Icons.Default.DateRange, 4)
+        )
+    }
+    
+    // Sign out confirmation dialog
+    if (showSignOutDialog) {
+        AlertDialog(
+            onDismissRequest = { showSignOutDialog = false },
+            title = {
+                Text("Confirm Sign Out")
+            },
+            text = {
+                Text("Are you sure you want to sign out? You will need to log in again to access your account.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showSignOutDialog = false
+                        auth.signOut()
+                        navController.navigate("welcome") {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFD32F2F)
+                    )
+                ) {
+                    Text("Sign Out")
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { showSignOutDialog = false },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF757575)
+                    )
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+    
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            DrawerContent(
-                currentUser = currentUser,
-                selectedMenuItem = selectedMenuItem,
-                isEnglish = isEnglish,
-                onMenuItemClick = { menuItem ->
-                    selectedMenuItem = menuItem
-                    scope.launch { drawerState.close() }
-                },
-                onLanguageToggle = { isEnglish = !isEnglish },
-                onProfileClick = {
-                    // TODO: Navigate to profile screen
-                },
-                onSignOut = {
-                    auth.signOut()
-                    navController.navigate("auth_selection") {
-                        popUpTo(0) { inclusive = true }
-                    }
-                }
-            )
+            ModalDrawerSheet(
+                modifier = Modifier.width(300.dp),
+                drawerContainerColor = Color(0xFFE3F2FD)
+            ) {
+                DrawerContent(
+                    currentUser = currentUser,
+                    selectedMenuItem = selectedMenuItem,
+                    onMenuItemClick = { menuItem ->
+                        selectedMenuItem = menuItem
+                        scope.launch { drawerState.close() }
+                    },
+                    onProfileClick = {
+                        // TODO: Navigate to profile screen
+                    },
+                    onSignOut = {
+                        showSignOutDialog = true
+                    },
+                    navController = navController
+                )
+            }
         }
     ) {
         Scaffold(
             containerColor = Color(0xFFE3F2FD),
             topBar = {
                 TopAppBar(
-                    title = { 
-                        Text(
-                            text = if (isEnglish) selectedMenuItem.title else getSwahiliTitle(selectedMenuItem),
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.Bold
-                            )
-                        ) 
+                    title = {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            PregMapLogo()
+                        }
                     },
                     navigationIcon = {
-                        IconButton(
-                            onClick = { 
-                                scope.launch { 
-                                    if (drawerState.isClosed) drawerState.open() else drawerState.close() 
-                                } 
-                            }
-                        ) {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
                             Icon(
                                 imageVector = Icons.Default.Menu,
-                                contentDescription = "Menu"
+                                contentDescription = "Menu",
+                                tint = Color(0xFF1976D2)
                             )
                         }
                     },
+                    actions = {
+                        // Spacer to balance the navigation icon and center the title
+                        Spacer(modifier = Modifier.width(48.dp))
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent,
-                        titleContentColor = Color(0xFF1976D2),
-                        navigationIconContentColor = Color(0xFF1976D2)
+                        containerColor = Color.Transparent
                     )
                 )
+            },
+            bottomBar = {
+                NavigationBar(
+                    modifier = Modifier.height(60.dp),
+                    containerColor = Color(0xFFE3F2FD)
+                ) {
+                    navigationItems.forEach { item ->
+                        NavigationBarItem(
+                            selected = selectedTab == item.index,
+                            onClick = { selectedTab = item.index },
+                            icon = {
+                                Icon(
+                                    imageVector = item.icon,
+                                    contentDescription = item.title,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            },
+                            alwaysShowLabel = false,
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = Color(0xFF1976D2),
+                                unselectedIconColor = Color(0xFF666666),
+                                indicatorColor = Color(0xFFFFFFFF)
+                            )
+                        )
+                    }
+                }
             }
         ) { paddingValues ->
             Box(
@@ -121,7 +210,10 @@ fun MainScreen(navController: NavController) {
                     DrawerMenuItem.HOME -> HomeScreen()
                     DrawerMenuItem.SMART_AI -> SmartAIScreen()
                     DrawerMenuItem.PREGNANCY_TIMELINE -> PregnancyTimelineScreen()
-                    DrawerMenuItem.CLINIC_VISITS -> ClinicVisitsScreen()
+                    DrawerMenuItem.CLINIC_VISITS -> {
+                        // This space is intentionally left blank.
+                        // The navigation is handled by the DrawerContent's onMenuItemClick.
+                    }
                     DrawerMenuItem.FIND_ADVICE -> FindAdviceScreen()
                     DrawerMenuItem.EMERGENCY_TRANSPORT -> EmergencyTransportScreen()
                     DrawerMenuItem.MAMA_COMMUNITY -> MamaCommunityScreen()
@@ -133,57 +225,100 @@ fun MainScreen(navController: NavController) {
 }
 
 @Composable
+fun PregMapLogo() {
+    val headlineMedium = MaterialTheme.typography.headlineMedium
+    Text(
+        text = "PregMap",
+        style = TextStyle(
+            brush = Brush.linearGradient(
+                colors = listOf(
+                    Color(0xFF42A5F5), // Light shiny blue
+                    Color(0xFF1976D2)  // Darker shiny blue
+                )
+            ),
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = headlineMedium.fontSize,
+            fontFamily = headlineMedium.fontFamily,
+            fontStyle = headlineMedium.fontStyle,
+            letterSpacing = headlineMedium.letterSpacing,
+            lineHeight = headlineMedium.lineHeight,
+            textAlign = TextAlign.Center
+        )
+    )
+}
+
+data class NavigationItem(
+    val title: String,
+    val icon: ImageVector,
+    val index: Int
+)
+
+@Composable
 fun DrawerContent(
     currentUser: com.google.firebase.auth.FirebaseUser?,
     selectedMenuItem: DrawerMenuItem,
-    isEnglish: Boolean,
     onMenuItemClick: (DrawerMenuItem) -> Unit,
-    onLanguageToggle: () -> Unit,
     onProfileClick: () -> Unit,
-    onSignOut: () -> Unit
+    onSignOut: () -> Unit,
+    navController: NavController
 ) {
+    val scope = rememberCoroutineScope()
+    val db = remember { Firebase.firestore }
+
     Column(
         modifier = Modifier
             .fillMaxHeight()
             .width(300.dp)
-            .background(Color.White)
-            .padding(16.dp)
+            .background(Color(0xFFE3F2FD))
+            .verticalScroll(rememberScrollState())
     ) {
-        // User Profile Section
         UserProfileSection(
             currentUser = currentUser,
             onProfileClick = onProfileClick
         )
-        
         Spacer(modifier = Modifier.height(24.dp))
-        
-        // Menu Items
-        DrawerMenuItem.values().forEach { menuItem ->
-            DrawerMenuItem(
-                menuItem = menuItem,
-                isSelected = selectedMenuItem == menuItem,
-                isEnglish = isEnglish,
-                onClick = { onMenuItemClick(menuItem) }
+        DrawerMenuItem.values().forEach { item ->
+            NavigationDrawerItem(
+                label = { 
+                    Text(
+                        text = item.title,
+                        color = if (item == selectedMenuItem) Color(0xFF1976D2) else Color(0xFF424242),
+                        fontWeight = if (item == selectedMenuItem) FontWeight.Bold else FontWeight.Normal
+                    ) 
+                },
+                selected = item == selectedMenuItem,
+                icon = { 
+                    Icon(
+                        imageVector = item.icon, 
+                        contentDescription = item.title,
+                        tint = if (item == selectedMenuItem) Color(0xFF1976D2) else Color(0xFF666666)
+                    ) 
+                },
+                onClick = {
+                    if (item == DrawerMenuItem.CLINIC_VISITS) {
+                        // Navigate directly without Firestore call for better performance
+                        navController.navigate("clinic_visits_registration")
+                        onMenuItemClick(item)
+                    } else {
+                        onMenuItemClick(item)
+                    }
+                },
+                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                colors = NavigationDrawerItemDefaults.colors(
+                    selectedContainerColor = Color(0xFFE3F2FD),
+                    unselectedContainerColor = Color.Transparent,
+                    selectedIconColor = Color(0xFF1976D2),
+                    unselectedIconColor = Color(0xFF666666),
+                    selectedTextColor = Color(0xFF1976D2),
+                    unselectedTextColor = Color(0xFF424242)
+                )
             )
-            Spacer(modifier = Modifier.height(4.dp))
         }
-        
         Spacer(modifier = Modifier.weight(1f))
-        
-        // Language Toggle
-        LanguageToggle(
-            isEnglish = isEnglish,
-            onToggle = onLanguageToggle
-        )
-        
+        SettingsAndSupport()
         Spacer(modifier = Modifier.height(16.dp))
-        
-        // Sign Out Button
         SignOutButton(onSignOut = onSignOut)
-        
         Spacer(modifier = Modifier.height(16.dp))
-        
-        // Footer
         FooterNote()
     }
 }
@@ -244,59 +379,7 @@ fun UserProfileSection(
 }
 
 @Composable
-fun DrawerMenuItem(
-    menuItem: DrawerMenuItem,
-    isSelected: Boolean,
-    isEnglish: Boolean,
-    onClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() },
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) 
-                Color(0xFF90CAF9)
-            else 
-                Color.Transparent
-        ),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = menuItem.icon,
-                contentDescription = null,
-                tint = if (isSelected) 
-                    Color(0xFF1976D2)
-                else 
-                    Color(0xFF424242),
-                modifier = Modifier.size(24.dp)
-            )
-            
-            Spacer(modifier = Modifier.width(12.dp))
-            
-            Text(
-                text = if (isEnglish) menuItem.title else getSwahiliTitle(menuItem),
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                ),
-                color = if (isSelected) 
-                    Color(0xFF1976D2)
-                else 
-                    Color(0xFF424242)
-            )
-        }
-    }
-}
-
-@Composable
-fun LanguageToggle(
-    isEnglish: Boolean,
-    onToggle: () -> Unit
-) {
+fun SettingsAndSupport() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -310,29 +393,14 @@ fun LanguageToggle(
         ) {
             Icon(
                 imageVector = Icons.Default.Info,
-                contentDescription = "Language",
+                contentDescription = "Settings & Support",
                 tint = Color(0xFF1976D2),
                 modifier = Modifier.size(20.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "Language",
+                text = "Settings & Support",
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF1976D2)
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            Switch(
-                checked = isEnglish,
-                onCheckedChange = { onToggle() },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color(0xFF1976D2),
-                    checkedTrackColor = Color(0xFF90CAF9)
-                )
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = if (isEnglish) "EN" else "SW",
-                style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF1976D2)
             )
         }
@@ -355,7 +423,7 @@ fun SignOutButton(onSignOut: () -> Unit) {
             modifier = Modifier.size(18.dp)
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Text("Sign Out")
+        Text("Sign Out (Secure)")
     }
 }
 
@@ -370,44 +438,7 @@ fun FooterNote() {
     )
 }
 
-// Helper function to get Swahili titles
-fun getSwahiliTitle(menuItem: DrawerMenuItem): String {
-    return when (menuItem) {
-        DrawerMenuItem.HOME -> "Nyumbani"
-        DrawerMenuItem.SMART_AI -> "Msaidizi wa AI"
-        DrawerMenuItem.PREGNANCY_TIMELINE -> "Muda wa Mimba Yangu"
-        DrawerMenuItem.CLINIC_VISITS -> "Ziara za Kliniki"
-        DrawerMenuItem.FIND_ADVICE -> "Tafuta Ushauri"
-        DrawerMenuItem.EMERGENCY_TRANSPORT -> "Usafiri wa Dharura"
-        DrawerMenuItem.MAMA_COMMUNITY -> "Jumuiya ya Mama"
-        DrawerMenuItem.MIDWIFERY_DOULAS -> "Wakunga na Doulas"
-    }
-}
-
 // Placeholder screens for each menu item
-@Composable
-fun HomeScreen() {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = "Welcome to PregMap!",
-            style = MaterialTheme.typography.headlineMedium,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "Your pregnancy journey companion",
-            style = MaterialTheme.typography.bodyLarge,
-            textAlign = TextAlign.Center
-        )
-    }
-}
-
 @Composable
 fun SmartAIScreen() {
     Column(
@@ -439,23 +470,6 @@ fun PregnancyTimelineScreen() {
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text("Track your pregnancy journey...")
-    }
-}
-
-@Composable
-fun ClinicVisitsScreen() {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = "My Clinic Visits",
-            style = MaterialTheme.typography.headlineMedium
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text("Manage your clinic appointments...")
     }
 }
 
@@ -525,4 +539,23 @@ fun MidwiferyDoulasScreen() {
         Spacer(modifier = Modifier.height(16.dp))
         Text("Find qualified midwives and doulas...")
     }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun MainScreenContent(
+    onSignOutClick: () -> Unit,
+    selectedMenuItem: DrawerMenuItem,
+    onMenuItemClick: (DrawerMenuItem) -> Unit,
+    navController: NavController
+) {
+    val currentUser = FirebaseAuth.getInstance().currentUser
+    DrawerContent(
+        currentUser = currentUser,
+        selectedMenuItem = selectedMenuItem,
+        onMenuItemClick = onMenuItemClick,
+        onProfileClick = { /* Handle profile click */ },
+        onSignOut = onSignOutClick,
+        navController = navController
+    )
 } 

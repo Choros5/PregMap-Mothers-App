@@ -54,6 +54,9 @@ dependencies {
     implementation(libs.accompanist.systemuicontroller)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     
+    // Coil for image loading
+    implementation("io.coil-kt:coil-compose:2.5.0")
+    
     // Firebase dependencies
     implementation(platform("com.google.firebase:firebase-bom:32.7.0"))
     implementation("com.google.firebase:firebase-auth")
@@ -61,6 +64,18 @@ dependencies {
     implementation("com.google.firebase:firebase-appcheck-playintegrity")
     implementation("com.google.android.gms:play-services-auth:20.7.0")
     
+    // Accompanist for Pager Layout
+    implementation("com.google.accompanist:accompanist-pager:0.23.1")
+    implementation("com.google.accompanist:accompanist-pager-indicators:0.23.1")
+    
+    // BCrypt for hashing
+    implementation("org.mindrot:jbcrypt:0.4")
+
+    // Vico for Charts
+    implementation("com.patrykandpatrick.vico:compose:1.6.4")
+    implementation("com.patrykandpatrick.vico:compose-m3:1.6.4")
+    implementation("com.patrykandpatrick.vico:core:1.6.4")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
