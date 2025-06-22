@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "609695671732",
+    "firebase_url": "https://bionavi-e4c21-default-rtdb.firebaseio.com",
+    "project_id": "bionavi-e4c21",
+    "storage_bucket": "bionavi-e4c21.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:609695671732:android:0c7b17a91244e438a83ee1",
+        "android_client_info": {
+          "package_name": "com.elvis.pregmap"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "609695671732-9vp6mna1dh30eeaco6ptp8l5d54o9r99.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.elvis.pregmap",
+            "certificate_hash": "4b5fcd76998f4d682fcb12f949d60ff94907ee82"
+          }
+        },
+        {
+          "client_id": "609695671732-lnov42uf90bj4fa726l50hc49aea7ocj.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC1CVHINFWrWmWfB8GGQtXZkVZqQLeHWmU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "609695671732-lnov42uf90bj4fa726l50hc49aea7ocj.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
