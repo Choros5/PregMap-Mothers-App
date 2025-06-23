@@ -95,123 +95,9 @@ class MainActivity : ComponentActivity() {
         
         enableEdgeToEdge()
         setContent {
-            PregMapTheme {
-                val navController = rememberNavController()
-                val auth = FirebaseAuth.getInstance()
-                
-                // Monitor authentication state and navigation
-                LaunchedEffect(auth.currentUser) {
-                    val currentUser = auth.currentUser
-                    val currentRoute = navController.currentBackStackEntry?.destination?.route
-                    
-                    if (currentUser != null && currentRoute != "main") {
-                        // User is logged in but not on main screen, navigate to main
-                        navController.navigate("main") {
-                            popUpTo(0) { inclusive = true }
-                        }
-                    } else if (currentUser == null && currentRoute == "main") {
-                        // User is not logged in but on main screen, navigate to auth
-                        navController.navigate("welcome") {
-                            popUpTo(0) { inclusive = true }
-                        }
-                    }
-                }
-                
-                val startDestination = if (FirebaseAuth.getInstance().currentUser != null) {
-                    "main"
-                } else {
-                    "login"
-                }
-                NavHost(navController = navController, startDestination = startDestination) {
-                    composable("login") { LoginScreen(navController) }
-                    composable("google_login") { GoogleLoginScreen(navController) }
-                    composable("google_signup") { GoogleSignUpScreen(navController) }
-                    composable("email_login") { EmailLoginScreen(navController) }
-                    composable("email_signup") { EmailSignUpScreen(navController) }
-                    composable("phone_login") { PhoneLoginScreen(navController) }
-                    composable("phone_signup") { PhoneSignUpScreen(navController) }
-                    composable("main") { MainScreen(navController) }
-                    composable("clinic_visits_registration") {
-                        PatientRegistrationScreen(
-                            onRegistrationSuccess = { navController.navigate("clinic_visits_create_pin") },
-                            onBackClick = { navController.popBackStack() }
-                        )
-                    }
-                    composable("clinic_visits_create_pin") {
-                        CreatePinScreen(
-                            onPinCreated = { navController.navigate("clinic_visits") },
-                            onBackClick = { navController.popBackStack() }
-                        )
-                    }
-                    composable("clinic_visits_pin_login") {
-                        PinLoginScreen(
-                            onPinVerified = { navController.navigate("clinic_visits") },
-                            onBackClick = { navController.popBackStack() }
-                        )
-                    }
-                    composable("clinic_visits") { ClinicVisitsScreen() }
-                }
-            }
+            MainApp()
         }
     }
-}
-
-/**
- * MainScreenWithBackHandler wraps the MainScreen with custom back button handling.
- * 
- * Features:
- * - Prevents accidental logout by back button press
- * - Requires double-tap back button to exit app when logged in
- * - Shows toast message on first back press
- * - Allows normal back navigation when not logged in
- */
-@Composable
-fun MainScreenWithBackHandler(navController: NavController) {
-    val context = LocalContext.current
-    var backPressedTime by remember { mutableStateOf(0L) }
-    val BACK_PRESS_INTERVAL = 2000L
-    val auth = FirebaseAuth.getInstance()
-    
-    // Create a custom back press callback
-    val backCallback = remember {
-        object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                // Check if user is logged in and on main screen
-                if (auth.currentUser != null) {
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - backPressedTime > BACK_PRESS_INTERVAL) {
-                        backPressedTime = currentTime
-                        Toast.makeText(
-                            context,
-                            "Press back again to exit",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        // User pressed back twice quickly, exit the app
-                        (context as? MainActivity)?.finish()
-                    }
-                } else {
-                    // User is not logged in, allow normal back navigation
-                    navController.popBackStack()
-                }
-            }
-        }
-    }
-    
-    // Register the back callback
-    LaunchedEffect(Unit) {
-        val activity = context as? MainActivity
-        activity?.onBackPressedDispatcher?.addCallback(backCallback)
-    }
-    
-    // Clean up the callback when the composable is disposed
-    DisposableEffect(Unit) {
-        onDispose {
-            backCallback.remove()
-        }
-    }
-    
-    MainScreen(navController)
 }
 
 @Composable
@@ -497,6 +383,117 @@ fun AuthButton(
                 fontWeight = FontWeight.Bold,
                 color = if (isPrimary) Color(0xFF1976D2) else Color.White
             )
+        }
+    }
+}
+
+@Composable
+fun MainApp() {
+    val systemUiController = rememberSystemUiController()
+    val navController = rememberNavController()
+    val auth = FirebaseAuth.getInstance()
+    
+    // Global back handler for all screens when user is logged in
+    val context = LocalContext.current
+    var backPressedTime by remember { mutableStateOf(0L) }
+    val BACK_PRESS_INTERVAL = 2000L
+    
+    // Create a global back press callback
+    val backCallback = remember {
+        object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                // Check if user is logged in
+                if (auth.currentUser != null) {
+                    // Check if we can pop back stack
+                    if (navController.previousBackStackEntry != null) {
+                        // There's a previous screen, allow normal back navigation
+                        navController.popBackStack()
+                    } else {
+                        // No previous screen, we're at the root (main screen)
+                        // Implement double-tap exit
+                        val currentTime = System.currentTimeMillis()
+                        if (currentTime - backPressedTime > BACK_PRESS_INTERVAL) {
+                            backPressedTime = currentTime
+                            Toast.makeText(
+                                context,
+                                "Press back again to exit",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            // User pressed back twice quickly, exit the app
+                            (context as? MainActivity)?.finish()
+                        }
+                    }
+                } else {
+                    // User is not logged in, allow normal back navigation
+                    navController.popBackStack()
+                }
+            }
+        }
+    }
+    
+    // Register the global back callback
+    LaunchedEffect(Unit) {
+        val activity = context as? MainActivity
+        activity?.onBackPressedDispatcher?.addCallback(backCallback)
+    }
+    
+    // Clean up the callback when the composable is disposed
+    DisposableEffect(Unit) {
+        onDispose {
+            backCallback.remove()
+        }
+    }
+
+    PregMapTheme {
+        systemUiController.setSystemBarsColor(Color(0xFFE3F2FD))
+        
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color(0xFFE3F2FD)
+        ) {
+            val startDestination = if (FirebaseAuth.getInstance().currentUser != null) {
+                "main"
+            } else {
+                "welcome"
+            }
+            NavHost(navController = navController, startDestination = startDestination) {
+                composable("splash") { SplashScreen(navController) }
+                composable("welcome") { WelcomeScreen(navController) }
+                composable("auth_selection/signup") { AuthSelectionScreen(navController, "signup") }
+                composable("auth_selection/login") { AuthSelectionScreen(navController, "login") }
+                composable("login") { LoginScreen(navController) }
+                composable("google_login") { GoogleLoginScreen(navController) }
+                composable("google_signup") { GoogleSignUpScreen(navController) }
+                composable("email_login") { EmailLoginScreen(navController) }
+                composable("email_signup") { EmailSignUpScreen(navController) }
+                composable("phone_login") { PhoneLoginScreen(navController) }
+                composable("phone_signup") { PhoneSignUpScreen(navController) }
+                composable("main") { MainScreen(navController) }
+                composable("clinic_visits_registration") {
+                    PatientRegistrationScreen(
+                        onRegistrationSuccess = { navController.navigate("clinic_visits_create_pin") },
+                        onBackClick = { navController.popBackStack() }
+                    )
+                }
+                composable("clinic_visits_create_pin") {
+                    CreatePinScreen(
+                        onPinCreated = { navController.navigate("clinic_visits") },
+                        onBackClick = { navController.popBackStack() }
+                    )
+                }
+                composable("clinic_visits_pin_login") {
+                    PinLoginScreen(
+                        onPinVerified = { navController.navigate("clinic_visits") },
+                        onBackClick = { navController.popBackStack() }
+                    )
+                }
+                composable("clinic_visits") { 
+                    ClinicVisitsScreen(
+                        navController = navController
+                    ) 
+                }
+            }
         }
     }
 }

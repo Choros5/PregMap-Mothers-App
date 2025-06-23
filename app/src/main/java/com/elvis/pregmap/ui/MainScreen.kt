@@ -38,6 +38,8 @@ import kotlinx.coroutines.tasks.await
 import com.elvis.pregmap.ui.screens.HomeScreen
 import com.elvis.pregmap.ui.screens.ClinicVisitsScreen
 import androidx.compose.ui.tooling.preview.Preview
+import com.elvis.pregmap.ui.screens.PinViewModel
+import androidx.compose.ui.platform.LocalContext
 
 // Drawer menu items enum
 enum class DrawerMenuItem(
@@ -58,16 +60,21 @@ enum class DrawerMenuItem(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(navController: NavController) {
+    val context = LocalContext.current
+    var selectedTab by remember { mutableStateOf(0) }
+    var showSignOutDialog by remember { mutableStateOf(false) }
+    var selectedMenuItem by remember { mutableStateOf(DrawerMenuItem.HOME) }
+    
     val auth = FirebaseAuth.getInstance()
     val currentUser = remember { auth.currentUser }
-    val db = remember { Firebase.firestore }
-    
-    var selectedMenuItem by remember { mutableStateOf(DrawerMenuItem.HOME) }
-    var showSignOutDialog by remember { mutableStateOf(false) }
-    var selectedTab by remember { mutableStateOf(0) }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-    
     val scope = rememberCoroutineScope()
+    val pinViewModel = remember { PinViewModel() }
+    
+    // Initialize PIN cache with context
+    LaunchedEffect(Unit) {
+        pinViewModel.initializePrefs(context)
+    }
     
     // Memoize the navigation items to prevent recreation
     val navigationItems = remember {
@@ -94,6 +101,8 @@ fun MainScreen(navController: NavController) {
                 Button(
                     onClick = {
                         showSignOutDialog = false
+                        // Clear PIN cache before signing out
+                        pinViewModel.clearCache()
                         auth.signOut()
                         navController.navigate("welcome") {
                             popUpTo(0) { inclusive = true }
@@ -126,17 +135,17 @@ fun MainScreen(navController: NavController) {
                 modifier = Modifier.width(300.dp),
                 drawerContainerColor = Color(0xFFE3F2FD)
             ) {
-                DrawerContent(
-                    currentUser = currentUser,
-                    selectedMenuItem = selectedMenuItem,
-                    onMenuItemClick = { menuItem ->
-                        selectedMenuItem = menuItem
-                        scope.launch { drawerState.close() }
-                    },
-                    onProfileClick = {
-                        // TODO: Navigate to profile screen
-                    },
-                    onSignOut = {
+            DrawerContent(
+                currentUser = currentUser,
+                selectedMenuItem = selectedMenuItem,
+                onMenuItemClick = { menuItem ->
+                    selectedMenuItem = menuItem
+                    scope.launch { drawerState.close() }
+                },
+                onProfileClick = {
+                    // TODO: Navigate to profile screen
+                },
+                onSignOut = {
                         showSignOutDialog = true
                     },
                     navController = navController
@@ -148,7 +157,7 @@ fun MainScreen(navController: NavController) {
             containerColor = Color(0xFFE3F2FD),
             topBar = {
                 TopAppBar(
-                    title = {
+                    title = { 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.Center
@@ -263,7 +272,13 @@ fun DrawerContent(
     navController: NavController
 ) {
     val scope = rememberCoroutineScope()
-    val db = remember { Firebase.firestore }
+    val pinViewModel = remember { PinViewModel() }
+    val context = LocalContext.current
+    
+    // Initialize PIN cache with context
+    LaunchedEffect(Unit) {
+        pinViewModel.initializePrefs(context)
+    }
 
     Column(
         modifier = Modifier
@@ -277,6 +292,8 @@ fun DrawerContent(
             onProfileClick = onProfileClick
         )
         Spacer(modifier = Modifier.height(24.dp))
+        
+        // Navigation items
         DrawerMenuItem.values().forEach { item ->
             NavigationDrawerItem(
                 label = { 
@@ -296,8 +313,20 @@ fun DrawerContent(
                 },
                 onClick = {
                     if (item == DrawerMenuItem.CLINIC_VISITS) {
-                        // Navigate directly without Firestore call for better performance
-                        navController.navigate("clinic_visits_registration")
+                        val userId = currentUser?.uid
+                        if (userId != null) {
+                            // Use cached registration status instead of database query
+                            if (pinViewModel.hasUserRegistered(userId)) {
+                                // User has already registered, go to PIN login
+                                navController.navigate("clinic_visits_pin_login")
+                            } else {
+                                // User hasn't registered yet, go to registration
+                                navController.navigate("clinic_visits_registration")
+                            }
+                        } else {
+                            // No user logged in, go to registration
+                            navController.navigate("clinic_visits_registration")
+                        }
                         onMenuItemClick(item)
                     } else {
                         onMenuItemClick(item)

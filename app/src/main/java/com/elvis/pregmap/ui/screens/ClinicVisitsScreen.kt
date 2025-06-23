@@ -8,33 +8,98 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
+import com.google.firebase.auth.ktx.auth
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.ktx.Firebase
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlin.math.roundToInt
+import com.elvis.pregmap.ui.components.CommonLayout
+import com.elvis.pregmap.ui.MainScreen
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import androidx.compose.ui.layout.ContentScale
+import androidx.activity.compose.BackHandler
+
+// Data class for navigation items
+data class NavigationItem(
+    val title: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val index: Int
+)
+
+// Drawer menu items enum (copied from MainScreen)
+enum class DrawerMenuItem(
+    val title: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val route: String
+) {
+    HOME("Home", Icons.Default.Home, "home"),
+    SMART_AI("Smart AI Assistant", Icons.Default.Info, "smart_ai"),
+    PREGNANCY_TIMELINE("My Pregnancy Timeline", Icons.Default.DateRange, "pregnancy_timeline"),
+    CLINIC_VISITS("My Clinic Visits", Icons.Default.Home, "clinic_visits"),
+    FIND_ADVICE("Find Advice", Icons.Default.Search, "find_advice"),
+    EMERGENCY_TRANSPORT("Emergency Transport", Icons.Default.Info, "emergency_transport"),
+    MAMA_COMMUNITY("Mama Community", Icons.Default.Person, "mama_community"),
+    MIDWIFERY_DOULAS("Midwifery & Doulas", Icons.Default.Person, "midwifery_doulas")
+}
+
+// PregMap Logo component
+@Composable
+fun PregMapLogo() {
+    Text(
+        text = "PregMap",
+        style = androidx.compose.material3.MaterialTheme.typography.headlineMedium.copy(
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF1976D2)
+        )
+    )
+}
 
 // --- Data Models ---
 data class ClinicVisit(
-    val id: Int,
+    val id: String,
+    val visitNumber: String,
+    val visitName: String,
     val date: String,
     val trimester: String,
     val status: VisitStatus,
     val facility: FacilityInfo,
     val doctor: String,
-    val notes: String,
-    val vitals: List<VitalReading>
+    val vitals: VitalsInfo,
+    val examination: ExaminationInfo,
+    val fetalDetails: FetalDetails,
+    val medications: List<String>,
+    val dangerSigns: List<String>,
+    val tetanusStatus: String,
+    val ifasStatus: String
 )
 
 enum class VisitStatus { COMPLETED, UPCOMING }
@@ -45,124 +110,789 @@ data class FacilityInfo(
     val mapsUrl: String
 )
 
+data class VitalsInfo(
+    val bloodPressure: String,
+    val temperature: String,
+    val pulse: String,
+    val respiratoryRate: String,
+    val maternalWeight: String
+)
+
+data class ExaminationInfo(
+    val generalAppearance: String,
+    val chiefComplaints: String,
+    val diagnosis: String,
+    val followUpPlan: String,
+    val generalObservations: String,
+    val breastExamination: String,
+    val abdomenExamination: String,
+    val pelvicExamination: String,
+    val cervicalExamination: String
+)
+
+data class FetalDetails(
+    val fetalHeartRate: String,
+    val fundalHeight: String,
+    val fetalPosition: String,
+    val fetalMovement: String,
+    val fetalHeartSounds: String,
+    val fetalLie: String,
+    val fetalPresentation: String,
+    val fetalEngagement: String,
+    val fetalBiometry: String,
+    val amnioticFluidLevel: String,
+    val placentaLocation: String
+)
+
 data class VitalReading(
     val label: String, // e.g., "BP"
     val values: List<Float>, // e.g., [120, 122, 118]
     val unit: String // e.g., "mmHg"
 )
 
+// --- ViewModel ---
+sealed class ClinicVisitsState {
+    object Loading : ClinicVisitsState()
+    data class Success(val visits: List<ClinicVisit>) : ClinicVisitsState()
+    data class Error(val message: String) : ClinicVisitsState()
+}
+
+class ClinicVisitsViewModel : ViewModel() {
+    private val db = Firebase.firestore
+    private val auth = Firebase.auth
+    private val _state = MutableStateFlow<ClinicVisitsState>(ClinicVisitsState.Loading)
+    val state: StateFlow<ClinicVisitsState> = _state
+
+    init {
+        loadClinicVisits()
+    }
+
+    // Add a method to manually set patient ID for testing
+    fun setPatientIdForTesting(patientId: String) {
+        PatientDataStore.verifiedPatientId = patientId
+        println("🧪 Test: Patient ID manually set in ClinicVisitsViewModel: $patientId")
+        loadClinicVisits() // Reload with the new patient ID
+    }
+
+    private fun loadClinicVisits() {
+        viewModelScope.launch {
+            try {
+                val userId = auth.currentUser?.uid
+                if (userId == null) {
+                    println("❌ No user logged in")
+                    _state.value = ClinicVisitsState.Error("User not logged in.")
+                    return@launch
+                }
+
+                // Get patient ID from user's document
+                val userDoc = db.collection("users").document(userId).get().await()
+                val patientId = userDoc.getString("patientId")
+                
+                println("🔍 Retrieved patient ID from user document: $patientId")
+                
+                if (patientId == null) {
+                    println("❌ No patient ID found in user document")
+                    _state.value = ClinicVisitsState.Error("No patient ID found. Please verify your details first.")
+                    return@launch
+                }
+
+                println("🔍 Loading ANC visits for patient: $patientId")
+                
+                val visitsCollection = db.collection("ancVisits")
+                val querySnapshot = visitsCollection
+                    .whereEqualTo("patientId", patientId)
+                    .get()
+                    .await()
+                
+                println("🔍 Found ${querySnapshot.size()} ANC visits")
+                
+                // Debug: Let's also check what documents exist
+                val allVisits = visitsCollection.get().await()
+                println("🔍 Total ANC visits in collection: ${allVisits.size()}")
+                allVisits.documents.take(3).forEach { doc ->
+                    println("🔍 Sample document - ID: ${doc.id}, patientId: ${doc.getString("patientId")}")
+                }
+                
+                val visits = mutableListOf<ClinicVisit>()
+                for (document in querySnapshot.documents) {
+                    try {
+                        // Debug: Print all available fields in this document
+                        println("🔍 Document ${document.id} fields:")
+                        document.data?.forEach { (key, value) ->
+                            println("  $key = $value")
+                        }
+                        
+                        val visit = ClinicVisit(
+                            id = document.id,
+                            visitNumber = document.get("visitNumber")?.toString() ?: "",
+                            visitName = document.getString("name") ?: "Clinic Visit",
+                            date = document.getString("visitDate") ?: "",
+                            trimester = document.getLong("trimester")?.toString() ?: "",
+                            status = when (document.getString("status")?.lowercase()) {
+                                "completed" -> VisitStatus.COMPLETED
+                                "scheduled" -> VisitStatus.UPCOMING
+                                "pending" -> VisitStatus.UPCOMING
+                                "upcoming" -> VisitStatus.UPCOMING
+                                else -> VisitStatus.COMPLETED
+                            },
+                            facility = FacilityInfo(
+                                name = document.getString("name") ?: "Clinic Visit",
+                                phone = "", // Not in the structure, will be empty
+                                mapsUrl = "" // Not in the structure, will be empty
+                            ),
+                            doctor = "", // Not in the structure, will be empty
+                            vitals = VitalsInfo(
+                                bloodPressure = (document.get("notes") as? Map<String, Any>)?.get("bloodPressure")?.toString() ?: "",
+                                temperature = (document.get("notes") as? Map<String, Any>)?.get("temperature")?.toString() ?: "",
+                                pulse = (document.get("notes") as? Map<String, Any>)?.get("pulseRate")?.toString() ?: "",
+                                respiratoryRate = (document.get("notes") as? Map<String, Any>)?.get("respiratoryRate")?.toString() ?: "",
+                                maternalWeight = (document.get("notes") as? Map<String, Any>)?.get("maternalWeight")?.toString() ?: ""
+                            ),
+                            examination = ExaminationInfo(
+                                generalAppearance = (document.get("notes") as? Map<String, Any>)?.get("generalAppearance")?.toString() ?: "",
+                                chiefComplaints = (document.get("notes") as? Map<String, Any>)?.get("chiefComplaints")?.toString() ?: "",
+                                diagnosis = (document.get("notes") as? Map<String, Any>)?.get("diagnosis")?.toString() ?: "",
+                                followUpPlan = (document.get("notes") as? Map<String, Any>)?.get("followUpPlan")?.toString() ?: "",
+                                generalObservations = (document.get("notes") as? Map<String, Any>)?.get("generalObservations")?.toString() ?: "",
+                                breastExamination = (document.get("notes") as? Map<String, Any>)?.get("breastExamination")?.toString() ?: "",
+                                abdomenExamination = (document.get("notes") as? Map<String, Any>)?.get("abdomenExamination")?.toString() ?: "",
+                                pelvicExamination = (document.get("notes") as? Map<String, Any>)?.get("pelvicExamination")?.toString() ?: "",
+                                cervicalExamination = (document.get("notes") as? Map<String, Any>)?.get("cervicalExamination")?.toString() ?: ""
+                            ),
+                            fetalDetails = FetalDetails(
+                                fetalHeartRate = (document.get("notes") as? Map<String, Any>)?.get("fetalHeartRate")?.toString() ?: "",
+                                fundalHeight = (document.get("notes") as? Map<String, Any>)?.get("fundalHeight")?.toString() ?: "",
+                                fetalPosition = (document.get("notes") as? Map<String, Any>)?.get("fetalPosition")?.toString() ?: "",
+                                fetalMovement = (document.get("notes") as? Map<String, Any>)?.get("fetalMovement")?.toString() ?: "",
+                                fetalHeartSounds = (document.get("notes") as? Map<String, Any>)?.get("fetalHeartSounds")?.toString() ?: "",
+                                fetalLie = (document.get("notes") as? Map<String, Any>)?.get("fetalLie")?.toString() ?: "",
+                                fetalPresentation = (document.get("notes") as? Map<String, Any>)?.get("fetalPresentation")?.toString() ?: "",
+                                fetalEngagement = (document.get("notes") as? Map<String, Any>)?.get("fetalEngagement")?.toString() ?: "",
+                                fetalBiometry = (document.get("notes") as? Map<String, Any>)?.get("fetalBiometry")?.toString() ?: "",
+                                amnioticFluidLevel = (document.get("notes") as? Map<String, Any>)?.get("amnioticFluidLevel")?.toString() ?: "",
+                                placentaLocation = (document.get("notes") as? Map<String, Any>)?.get("placentaLocation")?.toString() ?: ""
+                            ),
+                            medications = (document.get("notes") as? Map<String, Any>)?.get("medicationPlan")?.toString()?.split(",")?.map { it.trim() } ?: emptyList(),
+                            dangerSigns = buildDangerSignsList(document),
+                            tetanusStatus = (document.get("notes") as? Map<String, Any>)?.get("tetanusDose")?.toString() ?: "",
+                            ifasStatus = (document.get("notes") as? Map<String, Any>)?.get("ifasRefilled")?.toString() ?: ""
+                        )
+                        
+                        // Debug: Print the parsed visit data
+                        println("🔍 Parsed visit data for ${visit.id}:")
+                        println("  Vitals - BP: '${visit.vitals.bloodPressure}', Temp: '${visit.vitals.temperature}', Pulse: '${visit.vitals.pulse}', Weight: '${visit.vitals.maternalWeight}'")
+                        println("  Examination - General: '${visit.examination.generalAppearance}', Complaints: '${visit.examination.chiefComplaints}', Observations: '${visit.examination.generalObservations}'")
+                        println("  Fetal - HR: '${visit.fetalDetails.fetalHeartRate}', Position: '${visit.fetalDetails.fetalPosition}', Movement: '${visit.fetalDetails.fetalMovement}'")
+                        println("  Danger Signs: ${visit.dangerSigns.size} found")
+                        println("  Medications: ${visit.medications.size} found")
+                        
+                        visits.add(visit)
+                        println("🔍 Added visit: ${visit.date} - ${visit.facility.name}")
+                    } catch (e: Exception) {
+                        println("❌ Error parsing visit ${document.id}: ${e.message}")
+                    }
+                }
+                
+                if (visits.isEmpty()) {
+                    _state.value = ClinicVisitsState.Error("No ANC visits found for this patient.")
+                } else {
+                    _state.value = ClinicVisitsState.Success(visits)
+                }
+                
+            } catch (e: Exception) {
+                println("❌ Error loading ANC visits: ${e.message}")
+                _state.value = ClinicVisitsState.Error("Failed to load ANC visits: ${e.message}")
+            }
+        }
+    }
+}
+
 // --- Main Screen ---
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ClinicVisitsScreen() {
+fun ClinicVisitsScreen(
+    viewModel: ClinicVisitsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
+    navController: NavController? = null
+) {
     val context = LocalContext.current
+    var selectedTab by remember { mutableStateOf(0) }
     var selectedTrimester by remember { mutableStateOf("All") }
     var selectedStatus by remember { mutableStateOf("All") }
-    var expandedVisitId by remember { mutableStateOf<Int?>(null) }
+    var expandedVisitId by remember { mutableStateOf<String?>(null) }
     var reminderOptIn by remember { mutableStateOf(false) }
+    var showSignOutDialog by remember { mutableStateOf(false) }
+    var selectedMenuItem by remember { mutableStateOf(DrawerMenuItem.CLINIC_VISITS) }
+    
+    val state by viewModel.state.collectAsState()
+    val auth = remember { Firebase.auth }
+    val currentUser = remember { auth.currentUser }
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val pinViewModel = remember { PinViewModel() }
+    
+    // Initialize PIN cache with context
+    LaunchedEffect(Unit) {
+        pinViewModel.initializePrefs(context)
+    }
 
-    // Mock data
-    val allVisits = remember {
+    // BackHandler: Go to Home and remove Clinic Visits from stack
+    BackHandler {
+        navController?.navigate("main") {
+            popUpTo("clinic_visits") { inclusive = true }
+        }
+    }
+
+    // Navigation items to match MainScreen
+    val navigationItems = remember {
         listOf(
-            ClinicVisit(
-                id = 1,
-                date = "2024-03-10",
-                trimester = "1st",
-                status = VisitStatus.COMPLETED,
-                facility = FacilityInfo(
-                    name = "Sunrise Maternity Clinic",
-                    phone = "+254712345678",
-                    mapsUrl = "https://maps.google.com/?q=Sunrise+Maternity+Clinic"
-                ),
-                doctor = "Dr. Achieng",
-                notes = "Routine checkup. All normal.",
-                vitals = listOf(
-                    VitalReading("BP", listOf(120f, 122f, 118f, 121f), "mmHg"),
-                    VitalReading("Weight", listOf(60f, 61f, 62f, 62.5f), "kg")
-                )
-            ),
-            ClinicVisit(
-                id = 2,
-                date = "2024-05-15",
-                trimester = "2nd",
-                status = VisitStatus.UPCOMING,
-                facility = FacilityInfo(
-                    name = "Sunrise Maternity Clinic",
-                    phone = "+254712345678",
-                    mapsUrl = "https://maps.google.com/?q=Sunrise+Maternity+Clinic"
-                ),
-                doctor = "Dr. Achieng",
-                notes = "Next scheduled ANC visit.",
-                vitals = listOf(
-                    VitalReading("BP", listOf(121f, 123f, 120f, 122f), "mmHg"),
-                    VitalReading("Weight", listOf(62.5f, 63f, 63.5f, 64f), "kg")
-                )
-            )
+            NavigationItem("Home", Icons.Default.Home, 0),
+            NavigationItem("AI Assistant", Icons.Default.Info, 1),
+            NavigationItem("Community", Icons.Default.Person, 2),
+            NavigationItem("Notifications", Icons.Default.Notifications, 3),
+            NavigationItem("Timeline", Icons.Default.DateRange, 4)
         )
     }
-
-    // Filter logic
-    val filteredVisits = allVisits.filter {
-        (selectedTrimester == "All" || it.trimester == selectedTrimester) &&
-        (selectedStatus == "All" || it.status.name == selectedStatus.uppercase())
-    }
-
-    Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF8F9FA))) {
-        Text(
-            text = "My Clinic Visits",
-            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-            modifier = Modifier.padding(20.dp)
+    
+    // Sign out confirmation dialog
+    if (showSignOutDialog) {
+        AlertDialog(
+            onDismissRequest = { showSignOutDialog = false },
+            title = {
+                Text("Confirm Sign Out")
+            },
+            text = {
+                Text("Are you sure you want to sign out? You will need to log in again to access your account.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showSignOutDialog = false
+                        // Clear PIN cache before signing out
+                        pinViewModel.clearCache()
+                        auth.signOut()
+                        navController?.navigate("welcome") {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFD32F2F)
+                    )
+                ) {
+                    Text("Sign Out")
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { showSignOutDialog = false },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF757575)
+                    )
+                ) {
+                    Text("Cancel")
+                }
+            }
         )
-        // Filters
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            FilterChip(
-                label = "Trimester",
-                options = listOf("All", "1st", "2nd", "3rd"),
-                selected = selectedTrimester,
-                onSelected = { selectedTrimester = it }
-            )
-            FilterChip(
-                label = "Status",
-                options = listOf("All", "Completed", "Upcoming"),
-                selected = selectedStatus,
-                onSelected = { selectedStatus = it }
-            )
-        }
-        // Reminder toggle
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Visit Reminders:", fontWeight = FontWeight.Medium)
-            Spacer(Modifier.width(8.dp))
-            Switch(
-                checked = reminderOptIn,
-                onCheckedChange = { reminderOptIn = it }
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(if (reminderOptIn) "On" else "Off", fontSize = 14.sp)
-        }
-        // Visits list
-        LazyColumn(
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(filteredVisits) { visit ->
-                ClinicVisitCard(
-                    visit = visit,
-                    expanded = expandedVisitId == visit.id,
-                    onExpandToggle = {
-                        expandedVisitId = if (expandedVisitId == visit.id) null else visit.id
+    }
+    
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(
+                modifier = Modifier.width(300.dp),
+                drawerContainerColor = Color(0xFFE3F2FD)
+            ) {
+                DrawerContent(
+                    currentUser = currentUser,
+                    selectedMenuItem = selectedMenuItem,
+                    onMenuItemClick = { menuItem ->
+                        selectedMenuItem = menuItem
+                        scope.launch { drawerState.close() }
                     },
-                    onCall = {
-                        val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${visit.facility.phone}"))
-                        context.startActivity(intent)
+                    onProfileClick = {
+                        // TODO: Navigate to profile screen
                     },
-                    onMap = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(visit.facility.mapsUrl))
-                        context.startActivity(intent)
+                    onSignOut = {
+                        showSignOutDialog = true
+                    },
+                    navController = navController
+                )
+            }
+        }
+    ) {
+        Scaffold(
+            containerColor = Color(0xFFE3F2FD),
+            topBar = {
+                TopAppBar(
+                    title = { 
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            PregMapLogo()
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            Icon(
+                                imageVector = Icons.Default.Menu,
+                                contentDescription = "Menu",
+                                tint = Color(0xFF1976D2)
+                            )
+                        }
+                    },
+                    actions = {
+                        // Back button removed - using system back button instead
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent
+                    )
+                )
+            },
+            bottomBar = {
+                NavigationBar(
+                    modifier = Modifier.height(60.dp),
+                    containerColor = Color(0xFFE3F2FD)
+                ) {
+                    navigationItems.forEach { item ->
+                        NavigationBarItem(
+                            selected = false, // Always false since this is a separate screen
+                            onClick = {
+                                when (item.index) {
+                                    0 -> navController?.navigate("main") {
+                                        popUpTo("clinic_visits") { inclusive = true }
+                                    }
+                                    1 -> navController?.navigate("smart_ai")
+                                    2 -> navController?.navigate("mama_community")
+                                    3 -> navController?.navigate("notifications")
+                                    4 -> navController?.navigate("pregnancy_timeline")
+                                }
+                            },
+                            icon = {
+                                Icon(
+                                    imageVector = item.icon,
+                                    contentDescription = item.title,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            },
+                            alwaysShowLabel = false,
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = Color(0xFF1976D2),
+                                unselectedIconColor = Color(0xFF666666),
+                                indicatorColor = Color(0xFFFFFFFF)
+                            )
+                        )
+                    }
+                }
+            }
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color(0xFFE3F2FD),
+                                Color(0xFFF3E5F5),
+                                Color(0xFFE8F5E8)
+                            )
+                        )
+                    )
+            ) {
+                // Enhanced Tab Row
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                ) {
+                    TabRow(
+                        selectedTabIndex = selectedTab,
+                        containerColor = Color.Transparent,
+                        contentColor = Color(0xFF1976D2)
+                    ) {
+                        Tab(
+                            selected = selectedTab == 0,
+                            onClick = { selectedTab = 0 },
+                            text = { 
+                                Text(
+                                    "📊 Vitals Trends", 
+                                    fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal
+                                ) 
+                            }
+                        )
+                        Tab(
+                            selected = selectedTab == 1,
+                            onClick = { selectedTab = 1 },
+                            text = { 
+                                Text(
+                                    "🏥 ANC Visits", 
+                                    fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal
+                                ) 
+                            }
+                        )
+                    }
+                }
+                
+                when (state) {
+                    is ClinicVisitsState.Loading -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                shape = RoundedCornerShape(16.dp),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(32.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    CircularProgressIndicator(color = Color(0xFF1976D2))
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text(
+                                        "Loading your clinic visits...",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = Color(0xFF666666)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    is ClinicVisitsState.Error -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                shape = RoundedCornerShape(16.dp),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(32.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = "Error",
+                                        modifier = Modifier.size(48.dp),
+                                        tint = Color(0xFFD32F2F)
+                                    )
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text(
+                                        text = (state as ClinicVisitsState.Error).message,
+                                        color = Color(0xFFD32F2F),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    is ClinicVisitsState.Success -> {
+                        val visits = (state as ClinicVisitsState.Success).visits
+                        when (selectedTab) {
+                            0 -> {
+                                // Vitals Trends Tab
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(16.dp)
+                                ) {
+                                    // Enhanced Header Section (now scrolls with content)
+                                    item {
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(200.dp),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = Color.White
+                                            ),
+                                            shape = RoundedCornerShape(16.dp),
+                                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                                        ) {
+                                            Box(modifier = Modifier.fillMaxSize()) {
+                                                AsyncImage(
+                                                    model = ImageRequest.Builder(LocalContext.current)
+                                                        .data("https://images.unsplash.com/photo-1559757148-5c350d0d3c56?w=800&h=400&fit=crop")
+                                                        .crossfade(true)
+                                                        .build(),
+                                                    contentDescription = "Clinic Visits Background",
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                                
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .background(
+                                                            Brush.linearGradient(
+                                                                colors = listOf(
+                                                                    Color.Transparent,
+                                                                    Color.Black.copy(alpha = 0.7f)
+                                                                )
+                                                            )
+                                                        )
+                                                )
+                                                
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .padding(20.dp),
+                                                    verticalArrangement = Arrangement.Bottom
+                                                ) {
+                                                    Text(
+                                                        text = "My Clinic Visits",
+                                                        style = MaterialTheme.typography.headlineSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = Color.White
+                                                        )
+                                                    )
+                                                    Text(
+                                                        text = "Track your pregnancy journey",
+                                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                                            color = Color.White.copy(alpha = 0.9f)
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                    }
+                                    
+                                    item {
+                                        VitalsTrendsSection(visits)
+                                    }
+                                }
+                            }
+                            1 -> {
+                                // ANC Visits Tab
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(16.dp)
+                                ) {
+                                    // Enhanced Header Section (now scrolls with content)
+                                    item {
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(200.dp),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = Color.White
+                                            ),
+                                            shape = RoundedCornerShape(16.dp),
+                                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                                        ) {
+                                            Box(modifier = Modifier.fillMaxSize()) {
+                                                AsyncImage(
+                                                    model = ImageRequest.Builder(LocalContext.current)
+                                                        .data("https://images.unsplash.com/photo-1559757148-5c350d0d3c56?w=800&h=400&fit=crop")
+                                                        .crossfade(true)
+                                                        .build(),
+                                                    contentDescription = "Clinic Visits Background",
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                                
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .background(
+                                                            Brush.linearGradient(
+                                                                colors = listOf(
+                                                                    Color.Transparent,
+                                                                    Color.Black.copy(alpha = 0.7f)
+                                                                )
+                                                            )
+                                                        )
+                                                )
+                                                
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .padding(20.dp),
+                                                    verticalArrangement = Arrangement.Bottom
+                                                ) {
+                                                    Text(
+                                                        text = "My Clinic Visits",
+                                                        style = MaterialTheme.typography.headlineSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = Color.White
+                                                        )
+                                                    )
+                                                    Text(
+                                                        text = "Track your pregnancy journey",
+                                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                                            color = Color.White.copy(alpha = 0.9f)
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                    }
+                                    
+                                    // Enhanced Filter controls
+                                    item {
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                                            shape = RoundedCornerShape(12.dp),
+                                            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(16.dp)
+                                            ) {
+                                                Text(
+                                                    "Filter Visits",
+                                                    style = MaterialTheme.typography.titleMedium.copy(
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color(0xFF1976D2)
+                                                    ),
+                                                    modifier = Modifier.padding(bottom = 12.dp)
+                                                )
+                                                var trimesterExpanded by remember { mutableStateOf(false) }
+                                                var statusExpanded by remember { mutableStateOf(false) }
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                ) {
+                                                    // Trimester filter
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text("Trimester", fontSize = 12.sp, color = Color.Gray)
+                                                        Box {
+                                                            OutlinedButton(
+                                                                onClick = { trimesterExpanded = true },
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                colors = ButtonDefaults.outlinedButtonColors(
+                                                                    containerColor = Color(0xFFF5F5F5)
+                                                                )
+                                                            ) {
+                                                                Text(selectedTrimester, color = Color(0xFF1976D2))
+                                                                Icon(
+                                                                    Icons.Default.ArrowDropDown,
+                                                                    contentDescription = "Expand",
+                                                                    tint = Color(0xFF1976D2)
+                                                                )
+                                                            }
+                                                            DropdownMenu(
+                                                                expanded = trimesterExpanded,
+                                                                onDismissRequest = { trimesterExpanded = false }
+                                                            ) {
+                                                                listOf("All", "1st", "2nd", "3rd").forEach { trimester ->
+                                                                    DropdownMenuItem(
+                                                                        text = { Text(trimester) },
+                                                                        onClick = { 
+                                                                            selectedTrimester = trimester
+                                                                            trimesterExpanded = false
+                                                                        }
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    // Status filter
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text("Status", fontSize = 12.sp, color = Color.Gray)
+                                                        Box {
+                                                            OutlinedButton(
+                                                                onClick = { statusExpanded = true },
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                colors = ButtonDefaults.outlinedButtonColors(
+                                                                    containerColor = Color(0xFFF5F5F5)
+                                                                )
+                                                            ) {
+                                                                Text(selectedStatus, color = Color(0xFF1976D2))
+                                                                Icon(
+                                                                    Icons.Default.ArrowDropDown,
+                                                                    contentDescription = "Expand",
+                                                                    tint = Color(0xFF1976D2)
+                                                                )
+                                                            }
+                                                            DropdownMenu(
+                                                                expanded = statusExpanded,
+                                                                onDismissRequest = { statusExpanded = false }
+                                                            ) {
+                                                                listOf("All", "Completed", "Upcoming").forEach { status ->
+                                                                    DropdownMenuItem(
+                                                                        text = { Text(status) },
+                                                                        onClick = { 
+                                                                            selectedStatus = status
+                                                                            statusExpanded = false
+                                                                        }
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                    }
+                                    // Filter logic
+                                    val filteredVisits = visits.filter {
+                                        (selectedTrimester == "All" || it.trimester == selectedTrimester) &&
+                                        (selectedStatus == "All" || it.status.name == selectedStatus.uppercase())
+                                    }
+                                    items(filteredVisits) { visit ->
+                                        VisitCard(
+                                            visit = visit,
+                                            expanded = expandedVisitId == visit.id,
+                                            onExpandToggle = {
+                                                expandedVisitId = if (expandedVisitId == visit.id) null else visit.id
+                                            },
+                                            onCall = {
+                                                // Handle call action
+                                            },
+                                            onMap = {
+                                                // Handle map action
+                                            }
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FilterChip(
+    label: String,
+    options: List<String>,
+    selected: String,
+    onSelected: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.padding(vertical = 4.dp)
+        ) {
+            Text("$label: $selected")
+            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Expand")
+        }
+        
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option) },
+                    onClick = {
+                        onSelected(option)
+                        expanded = false
                     }
                 )
             }
@@ -171,34 +901,7 @@ fun ClinicVisitsScreen() {
 }
 
 @Composable
-fun FilterChip(label: String, options: List<String>, selected: String, onSelected: (String) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("$label:", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-        options.forEach { option ->
-            val isSelected = selected == option
-            Box(
-                modifier = Modifier
-                    .padding(start = 6.dp)
-                    .background(
-                        if (isSelected) Color(0xFF1976D2) else Color(0xFFE3F2FD),
-                        shape = RoundedCornerShape(16.dp)
-                    )
-                    .clickable { onSelected(option) }
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    text = option,
-                    color = if (isSelected) Color.White else Color(0xFF1976D2),
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    fontSize = 14.sp
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun ClinicVisitCard(
+fun VisitCard(
     visit: ClinicVisit,
     expanded: Boolean,
     onExpandToggle: () -> Unit,
@@ -215,11 +918,16 @@ fun ClinicVisitCard(
         elevation = CardDefaults.cardElevation(4.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
+            // Header with visit info
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(visit.date, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text(visit.facility.name, fontSize = 14.sp, color = Color(0xFF1976D2))
-                    Text(visit.trimester + " Trimester", fontSize = 13.sp, color = Color.Gray)
+                    Text(
+                        "Visit ${visit.visitNumber}: ${visit.visitName}",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    Text(visit.date, fontSize = 14.sp, color = Color(0xFF1976D2))
+                    Text("${visit.trimester} Trimester", fontSize = 13.sp, color = Color.Gray)
                 }
                 StatusChip(visit.status)
                 IconButton(onClick = onExpandToggle) {
@@ -229,28 +937,287 @@ fun ClinicVisitCard(
                     )
                 }
             }
+            
             if (expanded) {
-                Spacer(Modifier.height(10.dp))
-                Text("Doctor: ${visit.doctor}", fontWeight = FontWeight.Medium)
-                Text("Notes: ${visit.notes}", fontSize = 14.sp)
-                Spacer(Modifier.height(10.dp))
-                // Vitals Graph
-                visit.vitals.forEach { vital ->
-                    Text(vital.label, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                    VitalsLineChart(vital)
-                }
-                Spacer(Modifier.height(10.dp))
-                // Facility contact
+                Spacer(Modifier.height(16.dp))
+                
+                // Vitals Section
+                VisitSection(
+                    title = "Vitals",
+                    content = {
+                        Column {
+                            // Debug logging
+                            LaunchedEffect(visit.id) {
+                                println("🔍 UI: Rendering vitals for visit ${visit.id}")
+                                println("  BP: '${visit.vitals.bloodPressure}', Temp: '${visit.vitals.temperature}', Pulse: '${visit.vitals.pulse}', Weight: '${visit.vitals.maternalWeight}'")
+                            }
+                            
+                            VitalRow("Blood Pressure", visit.vitals.bloodPressure)
+                            VitalRow("Temperature", visit.vitals.temperature)
+                            VitalRow("Pulse Rate", visit.vitals.pulse)
+                            VitalRow("Respiratory Rate", visit.vitals.respiratoryRate)
+                            // Add maternal weight if available
+                            if (visit.vitals.maternalWeight.isNotEmpty()) {
+                                VitalRow("Maternal Weight", "${visit.vitals.maternalWeight} kg")
+                            }
+                            // Show "No data recorded" if all vitals are empty
+                            if (visit.vitals.bloodPressure.isEmpty() && 
+                                visit.vitals.temperature.isEmpty() && 
+                                visit.vitals.pulse.isEmpty() && 
+                                visit.vitals.respiratoryRate.isEmpty() && 
+                                visit.vitals.maternalWeight.isEmpty()) {
+                                Text("No vitals recorded", fontSize = 14.sp, color = Color.Gray, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                            }
+                        }
+                    }
+                )
+                
+                // Examination & Observations Section
+                VisitSection(
+                    title = "Examination & Observations",
+                    content = {
+                        Column {
+                            // Debug logging
+                            LaunchedEffect(visit.id) {
+                                println("🔍 UI: Rendering examination for visit ${visit.id}")
+                                println("  General: '${visit.examination.generalAppearance}', Complaints: '${visit.examination.chiefComplaints}', Observations: '${visit.examination.generalObservations}'")
+                            }
+                            
+                            if (visit.examination.generalAppearance.isNotEmpty()) {
+                                Text("General Appearance: ${visit.examination.generalAppearance}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.examination.chiefComplaints.isNotEmpty() && visit.examination.chiefComplaints != "No chief complaint") {
+                                Text("Chief Complaints: ${visit.examination.chiefComplaints}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.examination.diagnosis.isNotEmpty()) {
+                                Text("Diagnosis: ${visit.examination.diagnosis}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.examination.followUpPlan.isNotEmpty()) {
+                                Text("Follow-up Plan: ${visit.examination.followUpPlan}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            
+                            // Add additional examination fields from the actual structure
+                            if (visit.examination.generalObservations.isNotEmpty()) {
+                                Text("General Observations: ${visit.examination.generalObservations}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            
+                            if (visit.examination.breastExamination.isNotEmpty()) {
+                                Text("Breast Examination: ${visit.examination.breastExamination}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            
+                            if (visit.examination.abdomenExamination.isNotEmpty()) {
+                                Text("Abdomen Examination: ${visit.examination.abdomenExamination}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            
+                            if (visit.examination.pelvicExamination.isNotEmpty()) {
+                                Text("Pelvic Examination: ${visit.examination.pelvicExamination}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            
+                            if (visit.examination.cervicalExamination.isNotEmpty()) {
+                                Text("Cervical Examination: ${visit.examination.cervicalExamination}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            
+                            // Show "No data recorded" if all fields are empty
+                            if (visit.examination.generalAppearance.isEmpty() && 
+                                (visit.examination.chiefComplaints.isEmpty() || visit.examination.chiefComplaints == "No chief complaint") &&
+                                visit.examination.diagnosis.isEmpty() && 
+                                visit.examination.followUpPlan.isEmpty() &&
+                                visit.examination.generalObservations.isEmpty() &&
+                                visit.examination.breastExamination.isEmpty() &&
+                                visit.examination.abdomenExamination.isEmpty() &&
+                                visit.examination.pelvicExamination.isEmpty() &&
+                                visit.examination.cervicalExamination.isEmpty()) {
+                                Text("No examination data recorded", fontSize = 14.sp, color = Color.Gray, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                            }
+                        }
+                    }
+                )
+                
+                // Fetal Details Section
+                VisitSection(
+                    title = "Fetal Details",
+                    content = {
+                        Column {
+                            if (visit.fetalDetails.fetalHeartRate.isNotEmpty()) {
+                                Text("Fetal Heart Rate: ${visit.fetalDetails.fetalHeartRate} bpm", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.fetalDetails.fundalHeight.isNotEmpty()) {
+                                Text("Fundal Height: ${visit.fetalDetails.fundalHeight} cm", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.fetalDetails.fetalPosition.isNotEmpty()) {
+                                Text("Fetal Position: ${visit.fetalDetails.fetalPosition}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.fetalDetails.fetalMovement.isNotEmpty()) {
+                                Text("Fetal Movement: ${visit.fetalDetails.fetalMovement}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            
+                            // Add additional fetal details from the actual structure
+                            if (visit.fetalDetails.fetalHeartSounds.isNotEmpty()) {
+                                Text("Fetal Heart Sounds: ${visit.fetalDetails.fetalHeartSounds}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.fetalDetails.fetalLie.isNotEmpty()) {
+                                Text("Fetal Lie: ${visit.fetalDetails.fetalLie}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.fetalDetails.fetalPresentation.isNotEmpty()) {
+                                Text("Fetal Presentation: ${visit.fetalDetails.fetalPresentation}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.fetalDetails.fetalEngagement.isNotEmpty()) {
+                                Text("Fetal Engagement: ${visit.fetalDetails.fetalEngagement}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.fetalDetails.fetalBiometry.isNotEmpty()) {
+                                Text("Fetal Biometry: ${visit.fetalDetails.fetalBiometry}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.fetalDetails.amnioticFluidLevel.isNotEmpty()) {
+                                Text("Amniotic Fluid Level: ${visit.fetalDetails.amnioticFluidLevel}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.fetalDetails.placentaLocation.isNotEmpty()) {
+                                Text("Placenta Location: ${visit.fetalDetails.placentaLocation}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            
+                            // Show "No data recorded" if all fields are empty
+                            if (visit.fetalDetails.fetalHeartRate.isEmpty() && 
+                                visit.fetalDetails.fundalHeight.isEmpty() && 
+                                visit.fetalDetails.fetalPosition.isEmpty() && 
+                                visit.fetalDetails.fetalMovement.isEmpty() &&
+                                visit.fetalDetails.fetalHeartSounds.isEmpty() &&
+                                visit.fetalDetails.fetalLie.isEmpty() &&
+                                visit.fetalDetails.fetalPresentation.isEmpty() &&
+                                visit.fetalDetails.fetalEngagement.isEmpty() &&
+                                visit.fetalDetails.fetalBiometry.isEmpty() &&
+                                visit.fetalDetails.amnioticFluidLevel.isEmpty() &&
+                                visit.fetalDetails.placentaLocation.isEmpty()) {
+                                Text("No fetal details recorded", fontSize = 14.sp, color = Color.Gray, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                            }
+                        }
+                    }
+                )
+                
+                // Medications Section
+                VisitSection(
+                    title = "Medications",
+                    content = {
+                        Column {
+                            if (visit.medications.isNotEmpty()) {
+                                visit.medications.forEach { medication ->
+                                    Text("• $medication", fontSize = 14.sp)
+                                    Spacer(Modifier.height(2.dp))
+                                }
+                            } else {
+                                Text("No medications prescribed", fontSize = 14.sp, color = Color.Gray, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                            }
+                        }
+                    }
+                )
+                
+                // Danger Signs Section
+                VisitSection(
+                    title = "Danger Signs",
+                    content = {
+                        Column {
+                            if (visit.dangerSigns.isNotEmpty()) {
+                                visit.dangerSigns.forEach { sign ->
+                                    Text("• $sign", fontSize = 14.sp, color = Color.Red)
+                                    Spacer(Modifier.height(2.dp))
+                                }
+                            } else {
+                                Text("No danger signs detected", fontSize = 14.sp, color = Color.Gray, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                            }
+                        }
+                    }
+                )
+                
+                // Tetanus & IFAS Status Section
+                VisitSection(
+                    title = "Tetanus & IFAS Status",
+                    content = {
+                        Column {
+                            if (visit.tetanusStatus.isNotEmpty()) {
+                                Text("Tetanus: ${visit.tetanusStatus}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            if (visit.ifasStatus.isNotEmpty()) {
+                                Text("IFAS: ${visit.ifasStatus}", fontSize = 14.sp)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            // Show "No data recorded" if both fields are empty
+                            if (visit.tetanusStatus.isEmpty() && visit.ifasStatus.isEmpty()) {
+                                Text("No tetanus/IFAS data recorded", fontSize = 14.sp, color = Color.Gray, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                            }
+                        }
+                    }
+                )
+                
+                Spacer(Modifier.height(16.dp))
+                
+                // Facility contact buttons
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(onClick = onCall, shape = CircleShape, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))) {
+                    Button(
+                        onClick = onCall,
+                        shape = CircleShape,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
+                    ) {
                         Text("Call", color = Color.White)
                     }
                     Spacer(Modifier.width(8.dp))
-                    Button(onClick = onMap, shape = CircleShape, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF43A047))) {
+                    Button(
+                        onClick = onMap,
+                        shape = CircleShape,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF43A047))
+                    ) {
                         Text("Map", color = Color.White)
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun VisitSection(
+    title: String,
+    content: @Composable () -> Unit
+) {
+    Column(modifier = Modifier.padding(vertical = 8.dp)) {
+        Text(
+            text = title,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            color = Color(0xFF1976D2),
+            modifier = Modifier.padding(bottom = 4.dp)
+        )
+        content()
+    }
+}
+
+@Composable
+fun VitalRow(label: String, value: String) {
+    if (value.isNotEmpty()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text(value, fontSize = 14.sp, color = Color(0xFF1976D2))
         }
     }
 }
@@ -273,44 +1240,485 @@ fun StatusChip(status: VisitStatus) {
 }
 
 @Composable
-fun VitalsLineChart(vital: VitalReading) {
-    // Simple line chart using Canvas (mock, not to scale)
-    val points = vital.values
-    val max = points.maxOrNull() ?: 1f
-    val min = points.minOrNull() ?: 0f
-    val range = (max - min).takeIf { it > 0 } ?: 1f
-    val chartHeight = 40.dp
-    val chartWidth = 120.dp
-    Box(
+fun VitalsTrendsSection(visits: List<ClinicVisit>) {
+    Column(
         modifier = Modifier
-            .height(chartHeight)
-            .width(chartWidth)
-            .background(Color(0xFFF3E5F5), shape = RoundedCornerShape(8.dp))
-            .padding(6.dp)
+            .fillMaxWidth()
+            .padding(16.dp)
+            .background(Color(0xFFF3E5F5), shape = RoundedCornerShape(12.dp))
+            .padding(16.dp)
     ) {
-        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-            val stepX = size.width / (points.size - 1).coerceAtLeast(1)
-            val stepY = size.height / range
-            for (i in 0 until points.size - 1) {
-                val x1 = i * stepX
-                val y1 = size.height - ((points[i] - min) * stepY)
-                val x2 = (i + 1) * stepX
-                val y2 = size.height - ((points[i + 1] - min) * stepY)
-                drawLine(
-                    color = Color(0xFF1976D2),
-                    start = androidx.compose.ui.geometry.Offset(x1, y1),
-                    end = androidx.compose.ui.geometry.Offset(x2, y2),
-                    strokeWidth = 4f,
-                    cap = StrokeCap.Round
+        Text(
+            text = "Vitals Trends",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Color(0xFF1976D2)),
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        VitalsTrendChart(
+            label = "Blood Pressure (Systolic)",
+            values = visits.mapNotNull { it.vitals.bloodPressure.split("/").firstOrNull()?.toFloatOrNull() },
+            xLabels = visits.map { it.date.takeLast(5) },
+            color = Color(0xFF1976D2)
+        )
+        Spacer(Modifier.height(12.dp))
+        VitalsTrendChart(
+            label = "Temperature (°C)",
+            values = visits.mapNotNull { it.vitals.temperature.toFloatOrNull() },
+            xLabels = visits.map { it.date.takeLast(5) },
+            color = Color(0xFFFFA000)
+        )
+        Spacer(Modifier.height(12.dp))
+        VitalsTrendChart(
+            label = "Pulse Rate (bpm)",
+            values = visits.mapNotNull { it.vitals.pulse.toFloatOrNull() },
+            xLabels = visits.map { it.date.takeLast(5) },
+            color = Color(0xFF43A047)
+        )
+        Spacer(Modifier.height(12.dp))
+        VitalsTrendChart(
+            label = "Respiratory Rate (bpm)",
+            values = visits.mapNotNull { it.vitals.respiratoryRate.toFloatOrNull() },
+            xLabels = visits.map { it.date.takeLast(5) },
+            color = Color(0xFF7B1FA2)
+        )
+        Spacer(Modifier.height(12.dp))
+        VitalsTrendChart(
+            label = "Maternal Weight (kg)",
+            values = visits.mapNotNull { it.vitals.maternalWeight.toFloatOrNull() },
+            xLabels = visits.map { it.date.takeLast(5) },
+            color = Color(0xFFB71C1C)
+        )
+    }
+}
+
+@Composable
+fun VitalsTrendChart(label: String, values: List<Float>, xLabels: List<String>, color: Color) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = color)
+        if (values.isEmpty()) {
+            Text("No data recorded", fontSize = 12.sp, color = Color.Gray, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+        } else {
+            val max = values.maxOrNull() ?: 1f
+            val min = values.minOrNull() ?: 0f
+            val range = (max - min).takeIf { it > 0 } ?: 1f
+            val chartHeight = 60.dp
+            val chartWidth = 220.dp
+            Box(
+                modifier = Modifier
+                    .height(chartHeight)
+                    .width(chartWidth)
+                    .background(Color.White, shape = RoundedCornerShape(8.dp))
+                    .padding(6.dp)
+            ) {
+                androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                    val stepX = size.width / (values.size - 1).coerceAtLeast(1)
+                    val stepY = size.height / range
+                    for (i in 0 until values.size - 1) {
+                        val x1 = i * stepX
+                        val y1 = size.height - ((values[i] - min) * stepY)
+                        val x2 = (i + 1) * stepX
+                        val y2 = size.height - ((values[i + 1] - min) * stepY)
+                        drawLine(
+                            color = color,
+                            start = androidx.compose.ui.geometry.Offset(x1, y1),
+                            end = androidx.compose.ui.geometry.Offset(x2, y2),
+                            strokeWidth = 4f,
+                            cap = StrokeCap.Round
+                        )
+                    }
+                }
+                // Show last value
+                Text(
+                    text = values.last().roundToInt().toString(),
+                    fontSize = 12.sp,
+                    color = color,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                )
+            }
+            // X-axis labels (dates)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                xLabels.forEachIndexed { i, label ->
+                    if (i % (xLabels.size / 4 + 1) == 0 || i == xLabels.lastIndex) {
+                        Text(label, fontSize = 10.sp, color = Color.Gray)
+                    } else {
+                        Spacer(Modifier.width(1.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Helper functions to build visit data from ancVisits structure
+private fun buildVisitNotes(document: com.google.firebase.firestore.DocumentSnapshot): String {
+    val notes = mutableListOf<String>()
+    
+    // Add key findings
+    val bloodPressure = document.getString("bloodPressure")
+    if (!bloodPressure.isNullOrEmpty()) notes.add("BP: $bloodPressure")
+    
+    val pulseRate = document.getString("pulseRate")
+    if (!pulseRate.isNullOrEmpty()) notes.add("Pulse: $pulseRate")
+    
+    val temperature = document.getString("temperature")
+    if (!temperature.isNullOrEmpty()) notes.add("Temp: $temperature°C")
+    
+    val maternalWeight = document.getString("maternalWeight")
+    if (!maternalWeight.isNullOrEmpty()) notes.add("Weight: ${maternalWeight}kg")
+    
+    val fundalHeight = document.getString("fundalHeight")
+    if (!fundalHeight.isNullOrEmpty()) notes.add("Fundal Height: ${fundalHeight}cm")
+    
+    val fetalHeartRate = document.getString("fetalHeartRate")
+    if (!fetalHeartRate.isNullOrEmpty()) notes.add("FHR: $fetalHeartRate bpm")
+    
+    // Add examination findings
+    val generalAppearance = document.getString("generalAppearance")
+    if (!generalAppearance.isNullOrEmpty()) notes.add("General: $generalAppearance")
+    
+    val chiefComplaints = document.getString("chiefComplaints")
+    if (!chiefComplaints.isNullOrEmpty() && chiefComplaints != "No chief complaint") {
+        notes.add("Complaints: $chiefComplaints")
+    }
+    
+    val diagnosis = document.getString("diagnosis")
+    if (!diagnosis.isNullOrEmpty()) notes.add("Diagnosis: $diagnosis")
+    
+    val followUpPlan = document.getString("followUpPlan")
+    if (!followUpPlan.isNullOrEmpty()) notes.add("Follow-up: $followUpPlan")
+    
+    return notes.joinToString("\n")
+}
+
+private fun buildVitalReadings(document: com.google.firebase.firestore.DocumentSnapshot): List<String> {
+    val vitals = mutableListOf<String>()
+    
+    // Blood Pressure
+    val bloodPressure = document.getString("bloodPressure")
+    if (!bloodPressure.isNullOrEmpty()) {
+        vitals.add(bloodPressure)
+    }
+    
+    // Pulse Rate
+    val pulseRate = document.getString("pulseRate")
+    if (!pulseRate.isNullOrEmpty()) {
+        vitals.add(pulseRate)
+    }
+    
+    // Temperature
+    val temperature = document.getString("temperature")
+    if (!temperature.isNullOrEmpty()) {
+        vitals.add(temperature)
+    }
+    
+    // Maternal Weight
+    val maternalWeight = document.getString("maternalWeight")
+    if (!maternalWeight.isNullOrEmpty()) {
+        vitals.add(maternalWeight)
+    }
+    
+    // Fundal Height
+    val fundalHeight = document.getString("fundalHeight")
+    if (!fundalHeight.isNullOrEmpty()) {
+        vitals.add(fundalHeight)
+    }
+    
+    // Fetal Heart Rate
+    val fetalHeartRate = document.getString("fetalHeartRate")
+    if (!fetalHeartRate.isNullOrEmpty()) {
+        vitals.add(fetalHeartRate)
+    }
+    
+    return vitals
+}
+
+private fun buildDangerSignsList(document: com.google.firebase.firestore.DocumentSnapshot): List<String> {
+    val dangerSigns = mutableListOf<String>()
+    val notes = document.get("notes") as? Map<String, Any>
+    
+    // Check for various danger signs in the document
+    val severeHeadache = notes?.get("severeHeadache")?.toString()
+    if (!severeHeadache.isNullOrEmpty()) {
+        dangerSigns.add("Severe Headache: $severeHeadache")
+    }
+    
+    val severeAbdominalPain = notes?.get("severeAbdominalPain")?.toString()
+    if (!severeAbdominalPain.isNullOrEmpty()) {
+        dangerSigns.add("Severe Abdominal Pain: $severeAbdominalPain")
+    }
+    
+    val vaginalBleeding = notes?.get("vaginalBleeding")?.toString()
+    if (!vaginalBleeding.isNullOrEmpty() && vaginalBleeding != "None") {
+        dangerSigns.add("Vaginal Bleeding: $vaginalBleeding")
+    }
+    
+    val convulsions = notes?.get("convulsions")?.toString()
+    if (!convulsions.isNullOrEmpty()) {
+        dangerSigns.add("Convulsions: $convulsions")
+    }
+    
+    val fever = notes?.get("fever")?.toString()
+    if (!fever.isNullOrEmpty()) {
+        dangerSigns.add("Fever: $fever")
+    }
+    
+    val breakingWater = notes?.get("breakingWater")?.toString()
+    if (!breakingWater.isNullOrEmpty()) {
+        dangerSigns.add("Breaking Water: $breakingWater")
+    }
+    
+    val noFetalMovement = notes?.get("noFetalMovement")?.toString()
+    if (!noFetalMovement.isNullOrEmpty()) {
+        dangerSigns.add("No Fetal Movement: $noFetalMovement")
+    }
+    
+    val swellingFaceHands = notes?.get("swellingFaceHands")?.toString()
+    if (!swellingFaceHands.isNullOrEmpty()) {
+        dangerSigns.add("Swelling Face/Hands: $swellingFaceHands")
+    }
+    
+    // Add additional danger signs from the actual structure
+    val oedema = notes?.get("oedema")?.toString()
+    if (!oedema.isNullOrEmpty() && oedema != "None") {
+        dangerSigns.add("Oedema: $oedema")
+    }
+    
+    val pallor = notes?.get("pallor")?.toString()
+    if (!pallor.isNullOrEmpty() && pallor != "None") {
+        dangerSigns.add("Pallor: $pallor")
+    }
+    
+    val mentalStatus = notes?.get("mentalStatus")?.toString()
+    if (!mentalStatus.isNullOrEmpty() && mentalStatus != "Normal") {
+        dangerSigns.add("Mental Status: $mentalStatus")
+    }
+    
+    val heartSounds = notes?.get("heartSounds")?.toString()
+    if (!heartSounds.isNullOrEmpty() && heartSounds != "Normal") {
+        dangerSigns.add("Heart Sounds: $heartSounds")
+    }
+    
+    val lungSounds = notes?.get("lungSounds")?.toString()
+    if (!lungSounds.isNullOrEmpty() && lungSounds != "Normal") {
+        dangerSigns.add("Lung Sounds: $lungSounds")
+    }
+    
+    val hydrationStatus = notes?.get("hydrationStatus")?.toString()
+    if (!hydrationStatus.isNullOrEmpty() && hydrationStatus != "Normal") {
+        dangerSigns.add("Hydration Status: $hydrationStatus")
+    }
+    
+    val nutritionalStatus = notes?.get("nutritionalStatus")?.toString()
+    if (!nutritionalStatus.isNullOrEmpty() && nutritionalStatus != "Good") {
+        dangerSigns.add("Nutritional Status: $nutritionalStatus")
+    }
+    
+    val organomegaly = notes?.get("organomegaly")?.toString()
+    if (!organomegaly.isNullOrEmpty() && organomegaly != "None") {
+        dangerSigns.add("Organomegaly: $organomegaly")
+    }
+    
+    return dangerSigns
+}
+
+@Composable
+fun DrawerContent(
+    currentUser: com.google.firebase.auth.FirebaseUser?,
+    selectedMenuItem: DrawerMenuItem,
+    onMenuItemClick: (DrawerMenuItem) -> Unit,
+    onProfileClick: () -> Unit,
+    onSignOut: () -> Unit,
+    navController: NavController?
+) {
+    val scope = rememberCoroutineScope()
+    val pinViewModel = remember { PinViewModel() }
+    val context = LocalContext.current
+    
+    // Initialize PIN cache with context
+    LaunchedEffect(Unit) {
+        pinViewModel.initializePrefs(context)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(300.dp)
+            .background(Color(0xFFE3F2FD))
+            .verticalScroll(rememberScrollState())
+    ) {
+        UserProfileSection(
+            currentUser = currentUser,
+            onProfileClick = onProfileClick
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        DrawerMenuItem.values().forEach { item ->
+            NavigationDrawerItem(
+                label = { 
+                    Text(
+                        text = item.title,
+                        color = if (item == selectedMenuItem) Color(0xFF1976D2) else Color(0xFF424242),
+                        fontWeight = if (item == selectedMenuItem) FontWeight.Bold else FontWeight.Normal
+                    ) 
+                },
+                selected = item == selectedMenuItem,
+                icon = { 
+                    Icon(
+                        imageVector = item.icon, 
+                        contentDescription = item.title,
+                        tint = if (item == selectedMenuItem) Color(0xFF1976D2) else Color(0xFF666666)
+                    ) 
+                },
+                onClick = {
+                    if (item == DrawerMenuItem.CLINIC_VISITS) {
+                        val userId = currentUser?.uid
+                        if (userId != null) {
+                            // Use cached registration status instead of database query
+                            if (pinViewModel.hasUserRegistered(userId)) {
+                                // User has already registered, go to PIN login
+                                navController?.navigate("clinic_visits_pin_login")
+                            } else {
+                                // User hasn't registered yet, go to registration
+                                navController?.navigate("clinic_visits_registration")
+                            }
+                        } else {
+                            // No user logged in, go to registration
+                            navController?.navigate("clinic_visits_registration")
+                        }
+                        onMenuItemClick(item)
+                    } else {
+                        onMenuItemClick(item)
+                    }
+                },
+                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                colors = NavigationDrawerItemDefaults.colors(
+                    selectedContainerColor = Color(0xFFE3F2FD),
+                    unselectedContainerColor = Color.Transparent,
+                    selectedIconColor = Color(0xFF1976D2),
+                    unselectedIconColor = Color(0xFF666666),
+                    selectedTextColor = Color(0xFF1976D2),
+                    unselectedTextColor = Color(0xFF424242)
+                )
+            )
+        }
+        Spacer(modifier = Modifier.weight(1f))
+        SettingsAndSupport()
+        Spacer(modifier = Modifier.height(16.dp))
+        SignOutButton(onSignOut = onSignOut)
+        Spacer(modifier = Modifier.height(16.dp))
+        FooterNote()
+    }
+}
+
+@Composable
+fun UserProfileSection(
+    currentUser: com.google.firebase.auth.FirebaseUser?,
+    onProfileClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onProfileClick() },
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFF90CAF9)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // User Avatar
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF1976D2)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Person,
+                    contentDescription = "User Avatar",
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            
+            Spacer(modifier = Modifier.width(12.dp))
+            
+            // User Info
+            Column {
+                Text(
+                    text = currentUser?.displayName ?: currentUser?.email ?: "User",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = Color(0xFF1976D2)
+                )
+                Text(
+                    text = "Tap to view profile",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF1976D2).copy(alpha = 0.7f)
                 )
             }
         }
-        // Show last value
-        Text(
-            text = "${points.last().roundToInt()} ${vital.unit}",
-            fontSize = 12.sp,
-            color = Color(0xFF1976D2),
-            modifier = Modifier.align(Alignment.TopEnd)
-        )
     }
+}
+
+@Composable
+fun SettingsAndSupport() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFFE1F5FE)
+        ),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Info,
+                contentDescription = "Settings & Support",
+                tint = Color(0xFF1976D2),
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Settings & Support",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF1976D2)
+            )
+        }
+    }
+}
+
+@Composable
+fun SignOutButton(onSignOut: () -> Unit) {
+    Button(
+        onClick = onSignOut,
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color(0xFFD32F2F)
+        ),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Default.ExitToApp,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text("Sign Out (Secure)")
+    }
+}
+
+@Composable
+fun FooterNote() {
+    Text(
+        text = "PregMap v1.0",
+        style = MaterialTheme.typography.bodySmall,
+        color = Color(0xFF666666),
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth()
+    )
 } 

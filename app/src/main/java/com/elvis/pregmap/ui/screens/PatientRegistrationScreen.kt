@@ -21,7 +21,6 @@ fun PatientRegistrationScreen(
     onBackClick: () -> Unit,
     registrationViewModel: PatientRegistrationViewModel = viewModel()
 ) {
-    var idNumber by remember { mutableStateOf("") }
     var phoneNumber by remember { mutableStateOf("") }
     var accessCode by remember { mutableStateOf("") }
     val registrationState by registrationViewModel.registrationState.collectAsState()
@@ -52,23 +51,11 @@ fun PatientRegistrationScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                "Enter your details to securely access your clinic visits.",
+                "Enter your phone number and access code to securely access your clinic visits.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.Gray
             )
             Spacer(modifier = Modifier.height(32.dp))
-
-            OutlinedTextField(
-                value = idNumber,
-                onValueChange = { idNumber = it },
-                label = { Text("ID Number") },
-                modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color(0xFF1976D2),
-                    unfocusedBorderColor = Color(0xFFBDBDBD)
-                )
-            )
-            Spacer(modifier = Modifier.height(16.dp))
             
             OutlinedTextField(
                 value = phoneNumber,
@@ -79,7 +66,11 @@ fun PatientRegistrationScreen(
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = Color(0xFF1976D2),
-                    unfocusedBorderColor = Color(0xFFBDBDBD)
+                    unfocusedBorderColor = Color(0xFFBDBDBD),
+                    focusedTextColor = Color(0xFF1976D2),
+                    unfocusedTextColor = Color(0xFF424242),
+                    focusedLabelColor = Color(0xFF1976D2),
+                    unfocusedLabelColor = Color(0xFF666666)
                 )
             )
             Spacer(modifier = Modifier.height(16.dp))
@@ -88,11 +79,15 @@ fun PatientRegistrationScreen(
                 value = accessCode,
                 onValueChange = { accessCode = it },
                 label = { Text("Access Code") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = Color(0xFF1976D2),
-                    unfocusedBorderColor = Color(0xFFBDBDBD)
+                    unfocusedBorderColor = Color(0xFFBDBDBD),
+                    focusedTextColor = Color(0xFF1976D2),
+                    unfocusedTextColor = Color(0xFF424242),
+                    focusedLabelColor = Color(0xFF1976D2),
+                    unfocusedLabelColor = Color(0xFF666666)
                 )
             )
             Spacer(modifier = Modifier.height(32.dp))
@@ -114,7 +109,6 @@ fun PatientRegistrationScreen(
             Button(
                 onClick = {
                     registrationViewModel.verifyPatientDetails(
-                        idNumber = idNumber,
                         phoneNumber = "+254$phoneNumber",
                         accessCode = accessCode
                     )

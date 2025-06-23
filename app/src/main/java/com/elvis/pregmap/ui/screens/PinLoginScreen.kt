@@ -8,6 +8,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -23,6 +24,12 @@ fun PinLoginScreen(
 ) {
     var pin by remember { mutableStateOf("") }
     val pinState by pinViewModel.pinState.collectAsState()
+    val context = LocalContext.current
+    
+    // Initialize PIN cache with context
+    LaunchedEffect(Unit) {
+        pinViewModel.initializePrefs(context)
+    }
 
     LaunchedEffect(pinState) {
         if (pinState is PinState.Success) {
@@ -64,7 +71,11 @@ fun PinLoginScreen(
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = Color(0xFF1976D2),
-                    unfocusedBorderColor = Color(0xFFBDBDBD)
+                    unfocusedBorderColor = Color(0xFFBDBDBD),
+                    focusedTextColor = Color(0xFF1976D2),
+                    unfocusedTextColor = Color(0xFF424242),
+                    focusedLabelColor = Color(0xFF1976D2),
+                    unfocusedLabelColor = Color(0xFF666666)
                 )
             )
             Spacer(modifier = Modifier.height(32.dp))
