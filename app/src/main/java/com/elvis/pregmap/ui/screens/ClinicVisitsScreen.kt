@@ -47,41 +47,9 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import androidx.compose.ui.layout.ContentScale
 import androidx.activity.compose.BackHandler
-
-// Data class for navigation items
-data class NavigationItem(
-    val title: String,
-    val icon: androidx.compose.ui.graphics.vector.ImageVector,
-    val index: Int
-)
-
-// Drawer menu items enum (copied from MainScreen)
-enum class DrawerMenuItem(
-    val title: String,
-    val icon: androidx.compose.ui.graphics.vector.ImageVector,
-    val route: String
-) {
-    HOME("Home", Icons.Default.Home, "home"),
-    SMART_AI("Smart AI Assistant", Icons.Default.Info, "smart_ai"),
-    PREGNANCY_TIMELINE("My Pregnancy Timeline", Icons.Default.DateRange, "pregnancy_timeline"),
-    CLINIC_VISITS("My Clinic Visits", Icons.Default.Home, "clinic_visits"),
-    FIND_ADVICE("Find Advice", Icons.Default.Search, "find_advice"),
-    EMERGENCY_TRANSPORT("Emergency Transport", Icons.Default.Info, "emergency_transport"),
-    MAMA_COMMUNITY("Mama Community", Icons.Default.Person, "mama_community"),
-    MIDWIFERY_DOULAS("Midwifery & Doulas", Icons.Default.Person, "midwifery_doulas")
-}
-
-// PregMap Logo component
-@Composable
-fun PregMapLogo() {
-    Text(
-        text = "PregMap",
-        style = androidx.compose.material3.MaterialTheme.typography.headlineMedium.copy(
-            fontWeight = FontWeight.Bold,
-            color = Color(0xFF1976D2)
-        )
-    )
-}
+import com.elvis.pregmap.ui.DrawerMenuItem
+import com.elvis.pregmap.ui.DrawerContent
+import com.elvis.pregmap.ui.NavigationItem
 
 // --- Data Models ---
 data class ClinicVisit(
@@ -346,7 +314,7 @@ fun ClinicVisitsScreen(
     val navigationItems = remember {
         listOf(
             NavigationItem("Home", Icons.Default.Home, 0),
-            NavigationItem("AI Assistant", Icons.Default.Info, 1),
+            NavigationItem("TwinAI", Icons.Default.Info, 1),
             NavigationItem("Community", Icons.Default.Person, 2),
             NavigationItem("Notifications", Icons.Default.Notifications, 3),
             NavigationItem("Timeline", Icons.Default.DateRange, 4)
@@ -397,26 +365,21 @@ fun ClinicVisitsScreen(
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            ModalDrawerSheet(
-                modifier = Modifier.width(300.dp),
-                drawerContainerColor = Color(0xFFE3F2FD)
-            ) {
-                DrawerContent(
-                    currentUser = currentUser,
-                    selectedMenuItem = selectedMenuItem,
-                    onMenuItemClick = { menuItem ->
-                        selectedMenuItem = menuItem
-                        scope.launch { drawerState.close() }
-                    },
-                    onProfileClick = {
-                        // TODO: Navigate to profile screen
-                    },
-                    onSignOut = {
-                        showSignOutDialog = true
-                    },
-                    navController = navController
-                )
-            }
+            DrawerContent(
+                currentUser = currentUser,
+                selectedMenuItem = selectedMenuItem,
+                onMenuItemClick = { menuItem ->
+                    selectedMenuItem = menuItem
+                    scope.launch { drawerState.close() }
+                },
+                onProfileClick = {
+                    // TODO: Navigate to profile screen
+                },
+                onSignOut = {
+                    showSignOutDialog = true
+                },
+                navController = navController
+            )
         }
     ) {
         Scaffold(
@@ -461,7 +424,7 @@ fun ClinicVisitsScreen(
                                     0 -> navController?.navigate("main") {
                                         popUpTo("clinic_visits") { inclusive = true }
                                     }
-                                    1 -> navController?.navigate("smart_ai")
+                                    1 -> navController?.navigate("twin_ai")
                                     2 -> navController?.navigate("mama_community")
                                     3 -> navController?.navigate("notifications")
                                     4 -> navController?.navigate("pregnancy_timeline")
@@ -1521,204 +1484,12 @@ private fun buildDangerSignsList(document: com.google.firebase.firestore.Documen
 }
 
 @Composable
-fun DrawerContent(
-    currentUser: com.google.firebase.auth.FirebaseUser?,
-    selectedMenuItem: DrawerMenuItem,
-    onMenuItemClick: (DrawerMenuItem) -> Unit,
-    onProfileClick: () -> Unit,
-    onSignOut: () -> Unit,
-    navController: NavController?
-) {
-    val scope = rememberCoroutineScope()
-    val pinViewModel = remember { PinViewModel() }
-    val context = LocalContext.current
-    
-    // Initialize PIN cache with context
-    LaunchedEffect(Unit) {
-        pinViewModel.initializePrefs(context)
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxHeight()
-            .width(300.dp)
-            .background(Color(0xFFE3F2FD))
-            .verticalScroll(rememberScrollState())
-    ) {
-        UserProfileSection(
-            currentUser = currentUser,
-            onProfileClick = onProfileClick
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        DrawerMenuItem.values().forEach { item ->
-            NavigationDrawerItem(
-                label = { 
-                    Text(
-                        text = item.title,
-                        color = if (item == selectedMenuItem) Color(0xFF1976D2) else Color(0xFF424242),
-                        fontWeight = if (item == selectedMenuItem) FontWeight.Bold else FontWeight.Normal
-                    ) 
-                },
-                selected = item == selectedMenuItem,
-                icon = { 
-                    Icon(
-                        imageVector = item.icon, 
-                        contentDescription = item.title,
-                        tint = if (item == selectedMenuItem) Color(0xFF1976D2) else Color(0xFF666666)
-                    ) 
-                },
-                onClick = {
-                    if (item == DrawerMenuItem.CLINIC_VISITS) {
-                        val userId = currentUser?.uid
-                        if (userId != null) {
-                            // Use cached registration status instead of database query
-                            if (pinViewModel.hasUserRegistered(userId)) {
-                                // User has already registered, go to PIN login
-                                navController?.navigate("clinic_visits_pin_login")
-                            } else {
-                                // User hasn't registered yet, go to registration
-                                navController?.navigate("clinic_visits_registration")
-                            }
-                        } else {
-                            // No user logged in, go to registration
-                            navController?.navigate("clinic_visits_registration")
-                        }
-                        onMenuItemClick(item)
-                    } else {
-                        onMenuItemClick(item)
-                    }
-                },
-                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                colors = NavigationDrawerItemDefaults.colors(
-                    selectedContainerColor = Color(0xFFE3F2FD),
-                    unselectedContainerColor = Color.Transparent,
-                    selectedIconColor = Color(0xFF1976D2),
-                    unselectedIconColor = Color(0xFF666666),
-                    selectedTextColor = Color(0xFF1976D2),
-                    unselectedTextColor = Color(0xFF424242)
-                )
-            )
-        }
-        Spacer(modifier = Modifier.weight(1f))
-        SettingsAndSupport()
-        Spacer(modifier = Modifier.height(16.dp))
-        SignOutButton(onSignOut = onSignOut)
-        Spacer(modifier = Modifier.height(16.dp))
-        FooterNote()
-    }
-}
-
-@Composable
-fun UserProfileSection(
-    currentUser: com.google.firebase.auth.FirebaseUser?,
-    onProfileClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onProfileClick() },
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF90CAF9)
-        ),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // User Avatar
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF1976D2)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Person,
-                    contentDescription = "User Avatar",
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-            
-            Spacer(modifier = Modifier.width(12.dp))
-            
-            // User Info
-            Column {
-                Text(
-                    text = currentUser?.displayName ?: currentUser?.email ?: "User",
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.Bold
-                    ),
-                    color = Color(0xFF1976D2)
-                )
-                Text(
-                    text = "Tap to view profile",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF1976D2).copy(alpha = 0.7f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun SettingsAndSupport() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFFE1F5FE)
-        ),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Default.Info,
-                contentDescription = "Settings & Support",
-                tint = Color(0xFF1976D2),
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "Settings & Support",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF1976D2)
-            )
-        }
-    }
-}
-
-@Composable
-fun SignOutButton(onSignOut: () -> Unit) {
-    Button(
-        onClick = onSignOut,
-        modifier = Modifier.fillMaxWidth(),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = Color(0xFFD32F2F)
-        ),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Icon(
-            imageVector = Icons.Default.ExitToApp,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text("Sign Out (Secure)")
-    }
-}
-
-@Composable
-fun FooterNote() {
+fun PregMapLogo() {
     Text(
-        text = "PregMap v1.0",
-        style = MaterialTheme.typography.bodySmall,
-        color = Color(0xFF666666),
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth()
+        text = "PregMap",
+        style = androidx.compose.material3.MaterialTheme.typography.headlineMedium.copy(
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF1976D2)
+        )
     )
 } 

@@ -40,22 +40,9 @@ import com.elvis.pregmap.ui.screens.ClinicVisitsScreen
 import androidx.compose.ui.tooling.preview.Preview
 import com.elvis.pregmap.ui.screens.PinViewModel
 import androidx.compose.ui.platform.LocalContext
-
-// Drawer menu items enum
-enum class DrawerMenuItem(
-    val title: String,
-    val icon: ImageVector,
-    val route: String
-) {
-    HOME("Home", Icons.Default.Home, "home"),
-    SMART_AI("Smart AI Assistant", Icons.Default.Info, "smart_ai"),
-    PREGNANCY_TIMELINE("My Pregnancy Timeline", Icons.Default.DateRange, "pregnancy_timeline"),
-    CLINIC_VISITS("My Clinic Visits", Icons.Default.Home, "clinic_visits"),
-    FIND_ADVICE("Find Advice", Icons.Default.Search, "find_advice"),
-    EMERGENCY_TRANSPORT("Emergency Transport", Icons.Default.Info, "emergency_transport"),
-    MAMA_COMMUNITY("Mama Community", Icons.Default.Person, "mama_community"),
-    MIDWIFERY_DOULAS("Midwifery & Doulas", Icons.Default.Person, "midwifery_doulas")
-}
+import android.widget.Toast
+import kotlinx.coroutines.CoroutineScope
+import androidx.compose.runtime.rememberCoroutineScope
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -80,7 +67,7 @@ fun MainScreen(navController: NavController) {
     val navigationItems = remember {
         listOf(
             NavigationItem("Home", Icons.Default.Home, 0),
-            NavigationItem("AI Assistant", Icons.Default.Info, 1),
+            NavigationItem("TwinAI", Icons.Default.Info, 1),
             NavigationItem("Community", Icons.Default.Person, 2),
             NavigationItem("Notifications", Icons.Default.Notifications, 3),
             NavigationItem("Timeline", Icons.Default.DateRange, 4)
@@ -217,7 +204,20 @@ fun MainScreen(navController: NavController) {
             ) {
                 when (selectedMenuItem) {
                     DrawerMenuItem.HOME -> HomeScreen()
-                    DrawerMenuItem.SMART_AI -> SmartAIScreen()
+                    DrawerMenuItem.TWIN_AI -> TwinAIScreen(
+                        drawerState = drawerState,
+                        scope = scope,
+                        onShowHistory = {
+                            // TODO: Implement history dialog or navigation
+                            // For now, show a Toast
+                            Toast.makeText(context, "Show chat history", Toast.LENGTH_SHORT).show()
+                        },
+                        onNewChat = {
+                            // TODO: Implement new chat logic (e.g., clear messages)
+                            Toast.makeText(context, "Start new chat", Toast.LENGTH_SHORT).show()
+                        },
+                        navController = navController
+                    )
                     DrawerMenuItem.PREGNANCY_TIMELINE -> PregnancyTimelineScreen()
                     DrawerMenuItem.CLINIC_VISITS -> {
                         // This space is intentionally left blank.
@@ -327,6 +327,9 @@ fun DrawerContent(
                             // No user logged in, go to registration
                             navController.navigate("clinic_visits_registration")
                         }
+                        onMenuItemClick(item)
+                    } else if (item == DrawerMenuItem.TWIN_AI) {
+                        navController.navigate("twin_ai")
                         onMenuItemClick(item)
                     } else {
                         onMenuItemClick(item)
@@ -469,7 +472,14 @@ fun FooterNote() {
 
 // Placeholder screens for each menu item
 @Composable
-fun SmartAIScreen() {
+fun TwinAIScreen(
+    drawerState: DrawerState,
+    scope: CoroutineScope,
+    onShowHistory: () -> Unit,
+    onNewChat: () -> Unit,
+    navController: NavController
+) {
+    // Will implement full UI next
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -477,7 +487,7 @@ fun SmartAIScreen() {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "Smart AI Assistant",
+            text = "TwinAI – Your Pregnancy Companion",
             style = MaterialTheme.typography.headlineMedium
         )
         Spacer(modifier = Modifier.height(16.dp))

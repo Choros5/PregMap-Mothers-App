@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -19,6 +21,18 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Expose OpenAI API key from local.properties to BuildConfig
+    val localProps = Properties()
+    val localPropsFile = rootProject.file("local.properties")
+    if (localPropsFile.exists()) {
+        localProps.load(localPropsFile.inputStream())
+    }
+    val openAiKey = localProps.getProperty("OPENAI_API_KEY") ?: ""
+    println("DEBUG: OpenAI Key from Gradle: $openAiKey")
+    buildTypes.all {
+        buildConfigField("String", "OPENAI_API_KEY", "\"$openAiKey\"")
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -37,6 +51,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

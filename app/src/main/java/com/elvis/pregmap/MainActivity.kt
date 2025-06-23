@@ -70,6 +70,17 @@ import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import com.elvis.pregmap.ui.screens.TwinAIScreen
+import androidx.compose.material3.DrawerState
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.rememberDrawerState
+import kotlinx.coroutines.CoroutineScope
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.AlertDialog
+import com.elvis.pregmap.ui.DrawerMenuItem
+import com.elvis.pregmap.ui.DrawerContent
 
 /**
  * MainActivity handles the main navigation and authentication flow of the PregMap app.
@@ -492,6 +503,82 @@ fun MainApp() {
                     ClinicVisitsScreen(
                         navController = navController
                     ) 
+                }
+                composable("twin_ai") {
+                    val context = LocalContext.current
+                    var selectedMenuItem by remember { mutableStateOf(DrawerMenuItem.TWIN_AI) }
+                    var showSignOutDialog by remember { mutableStateOf(false) }
+                    val auth = FirebaseAuth.getInstance()
+                    val currentUser = remember { auth.currentUser }
+                    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+                    val scope = rememberCoroutineScope()
+                    ModalNavigationDrawer(
+                        drawerState = drawerState,
+                        drawerContent = {
+                            ModalDrawerSheet(
+                                modifier = Modifier.width(300.dp),
+                                drawerContainerColor = Color(0xFFE3F2FD)
+                            ) {
+                                DrawerContent(
+                                    currentUser = currentUser,
+                                    selectedMenuItem = selectedMenuItem,
+                                    onMenuItemClick = { menuItem ->
+                                        selectedMenuItem = menuItem
+                                        scope.launch { drawerState.close() }
+                                        if (menuItem == DrawerMenuItem.TWIN_AI) return@DrawerContent
+                                        // Navigate to other screens if needed
+                                        navController.navigate(menuItem.route)
+                                    },
+                                    onProfileClick = {},
+                                    onSignOut = { showSignOutDialog = true },
+                                    navController = navController
+                                )
+                            }
+                        }
+                    ) {
+                        TwinAIScreen(
+                            drawerState = drawerState,
+                            scope = scope,
+                            onShowHistory = {
+                                Toast.makeText(context, "Show chat history", Toast.LENGTH_SHORT).show()
+                            },
+                            onNewChat = {
+                                Toast.makeText(context, "Start new chat", Toast.LENGTH_SHORT).show()
+                            },
+                            navController = navController
+                        )
+                        if (showSignOutDialog) {
+                            AlertDialog(
+                                onDismissRequest = { showSignOutDialog = false },
+                                title = { Text("Confirm Sign Out") },
+                                text = { Text("Are you sure you want to sign out? You will need to log in again to access your account.") },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            showSignOutDialog = false
+                                            // Clear PIN cache before signing out
+                                            // PinViewModel().clearCache() // Uncomment if needed
+                                            auth.signOut()
+                                            navController.navigate("welcome") {
+                                                popUpTo(0) { inclusive = true }
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFFD32F2F)
+                                        )
+                                    ) { Text("Sign Out") }
+                                },
+                                dismissButton = {
+                                    Button(
+                                        onClick = { showSignOutDialog = false },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFF757575)
+                                        )
+                                    ) { Text("Cancel") }
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
